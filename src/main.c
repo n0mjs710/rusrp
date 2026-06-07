@@ -19,7 +19,7 @@
 #include <systemd/sd-journal.h>
 #include <systemd/sd-daemon.h>
 
-#define DEFAULT_CONFIG "/etc/usrp-remote-link/usrp-remote-link.toml"
+#define DEFAULT_CONFIG "/etc/rusrp/rusrp.toml"
 
 static atomic_bool g_stop = ATOMIC_VAR_INIT(false);
 

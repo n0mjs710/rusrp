@@ -1,6 +1,6 @@
 [Unit]
-Description=USRP Remote Link (%i)
-Documentation=https://github.com/rosenpoon/usrp-remote-link
+Description=rusrp - Remote USRP (%i)
+Documentation=https://github.com/n0mjs710/rusrp
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
@@ -8,7 +8,7 @@ StartLimitBurst=5
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/usrp-remote-link -c /etc/usrp-remote-link/%i.toml
+ExecStart=/usr/local/bin/rusrp -c /etc/rusrp/%i.toml
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=10

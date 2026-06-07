@@ -1,4 +1,4 @@
-project('usrp-remote-link', 'c',
+project('rusrp', 'c',
   version : '0.1.0',
   default_options : [
     'c_std=c11',
@@ -29,8 +29,8 @@ tomlc99_dep = declare_dependency(
 subdir('src')
 
 install_data(
-  'config/usrp-remote-link.toml.example',
-  install_dir : get_option('sysconfdir') / 'usrp-remote-link',
+  'config/rusrp.toml.example',
+  install_dir : get_option('sysconfdir') / 'rusrp',
 )
 
 systemd_system_unit_dir = get_option('systemd_system_unit_dir')
@@ -44,7 +44,7 @@ if systemd_system_unit_dir == ''
 endif
 
 install_data(
-  'systemd/usrp-remote-link@.service',
+  'systemd/rusrp@.service',
   install_dir : systemd_system_unit_dir,
 )
 

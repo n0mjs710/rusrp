@@ -1,4 +1,4 @@
-# rusrp — USRP Remote Link
+# rusrp — Remote USRP
 
 A lightweight audio/control terminal for amateur radio repeater linking. Runs on Linux SBCs and connects an analog repeater controller to an [AllStarLink (ASL3)](https://www.allstarlink.org/) server using the USRP protocol over UDP.
 
@@ -26,7 +26,7 @@ Repeater controller                      AllStarLink server
 - **Audio**: 8 kHz mono 16-bit, 20 ms frames
 - **HID device**: CM108/CM119A — COS on VOLDN (pin 48), PTT on GPIO3 (pin 13)
 - **USRP protocol**: 352-byte UDP frames, network byte order (ASL3 only)
-- **DSP**: first-order IIR high-pass filter at 300 Hz (blocks CTCSS/DCS tones)
+- **DSP**: 4th-order Butterworth high-pass filter at 250 Hz (blocks CTCSS/DCS tones)
 - **Jitter buffer**: 16-slot sequence-ordered buffer with silence injection for gaps
 - **Watchdog**: sd_notify integration; network timeout forces PTT release
 
@@ -67,8 +67,8 @@ sudo ninja -C build install
 Copy the example config and edit for your site:
 
 ```bash
-cp config/usrp-remote-link.toml.example usrp-remote-link.toml
-$EDITOR usrp-remote-link.toml
+cp config/rusrp.toml.example rusrp.toml
+$EDITOR rusrp.toml
 ```
 
 Key settings:
@@ -88,36 +88,36 @@ Key settings:
 | `[network]` | `jitter_buffer_ms` | Jitter buffer depth (40–250 ms) |
 | `[watchdog]` | `network_timeout_ms` | Force PTT release after this many ms with no USRP traffic |
 
-See `config/usrp-remote-link.toml.example` for all options with comments.
+See `config/rusrp.toml.example` for all options with comments.
 
 ## Running
 
 ### Directly
 
 ```bash
-./build/usrp-remote-link -c usrp-remote-link.toml
+./build/rusrp -c rusrp.toml
 ```
 
 ### With systemd (recommended)
 
-The installed unit is a template (`usrp-remote-link@.service`). The instance name is used as the config filename under `/etc/usrp-remote-link/`.
+The installed unit is a template (`rusrp@.service`). The instance name is used as the config filename under `/etc/rusrp/`.
 
 ```bash
 # Install config for an instance named "node1"
-sudo cp usrp-remote-link.toml /etc/usrp-remote-link/node1.toml
+sudo cp rusrp.toml /etc/rusrp/node1.toml
 
 # Enable and start
-sudo systemctl enable --now usrp-remote-link@node1
+sudo systemctl enable --now rusrp@node1
 
 # View logs
-journalctl -u usrp-remote-link@node1 -f
+journalctl -u rusrp@node1 -f
 ```
 
 Multiple instances for multiple radio links:
 
 ```bash
-sudo systemctl enable --now usrp-remote-link@node1
-sudo systemctl enable --now usrp-remote-link@node2
+sudo systemctl enable --now rusrp@node1
+sudo systemctl enable --now rusrp@node2
 ```
 
 ## udev rule (recommended)

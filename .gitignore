@@ -7,4 +7,4 @@ vendor/tomlc99/toml.c
 vendor/tomlc99/toml.h
 
 # Live dev/deployment config — contains site-specific settings; not for repo
-usrp-remote-link.toml
+rusrp.toml

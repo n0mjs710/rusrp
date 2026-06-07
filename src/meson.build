@@ -11,7 +11,7 @@ sources = files(
   'watchdog.c',
 )
 
-executable('usrp-remote-link',
+executable('rusrp',
   sources,
   dependencies : [
     alsa_dep,
