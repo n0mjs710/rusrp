@@ -47,3 +47,8 @@ install_data(
   'systemd/usrp-remote-link@.service',
   install_dir : systemd_system_unit_dir,
 )
+
+install_data(
+  'udev/90-cm119a.rules',
+  install_dir : get_option('sysconfdir') / '../lib/udev/rules.d',
+)

@@ -80,7 +80,7 @@ Key settings:
 | `[usrp]` | `local_port` | UDP port to bind locally (default 32001) |
 | `[audio]` | `alsa_device` | ALSA device string (e.g. `hw:1,0`) |
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
-| `[audio]` | `input_highpass` | Enable 300 Hz HPF on captured audio |
+| `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS) |
 | `[logic]` | `hid_device` | hidraw device (e.g. `/dev/hidraw0`) |
 | `[logic]` | `output_active_gpio` | GPIO number for PTT (default 3) |
 | `[logic]` | `input_active_low` | Invert COS polarity if needed |
@@ -122,15 +122,15 @@ sudo systemctl enable --now usrp-remote-link@node2
 
 ## udev rule (recommended)
 
-The CM119A exposes VOLDN as a keyboard key. Without a udev rule, the kernel will treat a continuous carrier as a held KEY_VOLUMEDOWN, which can affect system volume. Add:
+The CM119A exposes VOLDN as a keyboard key. Without a udev rule, the kernel treats a continuous carrier (COS active) as a held KEY_VOLUMEDOWN, silently reducing system volume over time.
 
-```
-# /etc/udev/rules.d/90-cm119a-hid.rules
-SUBSYSTEM=="input", ATTRS{idVendor}=="0d8c", ATTRS{idProduct}=="0012", \
-    ENV{ID_INPUT_KEY}="", ENV{ID_INPUT}=""
-```
+The rule is installed automatically by `sudo ninja -C build install`. To install manually:
 
-Then reload: `sudo udevadm control --reload && sudo udevadm trigger`
+```bash
+sudo cp udev/90-cm119a.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger
+```
 
 ## Finding your ALSA and HID devices
 

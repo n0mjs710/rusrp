@@ -1,0 +1,12 @@
+# Suppress the CM108/CM119A VOLDN button from being treated as KEY_VOLUMEDOWN.
+# Without this rule, a continuous carrier (COS active) holds KEY_VOLUMEDOWN,
+# which will silently reduce system volume over time.
+#
+# Install to: /etc/udev/rules.d/90-cm119a.rules
+# Reload:     sudo udevadm control --reload && sudo udevadm trigger
+
+SUBSYSTEM=="input", \
+    ATTRS{idVendor}=="0d8c", \
+    ATTRS{idProduct}=="0012", \
+    ENV{ID_INPUT_KEY}="", \
+    ENV{ID_INPUT}=""
