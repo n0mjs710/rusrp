@@ -1,8 +1,10 @@
 # rusrp — Remote USRP
 
+> **Alpha — not production ready.** This project is in early testing. It may not work, may behave unexpectedly, and will change without notice. We are not accepting bug reports at this stage. If you're experimenting, we'd love to hear what you find — but please don't deploy this on a live repeater you depend on.
+
 A lightweight audio/control terminal for amateur radio repeater linking. Runs on Linux SBCs and connects an analog repeater controller to an [AllStarLink (ASL3)](https://www.allstarlink.org/) server using the USRP protocol over UDP.
 
-One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session. Run multiple instances (via systemd template units) for multiple links.
+One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session.
 
 ## How it works
 
@@ -64,12 +66,7 @@ sudo ninja -C build install
 
 ## Configuration
 
-Copy the example config and edit for your site:
-
-```bash
-cp config/rusrp.toml.example rusrp.toml
-$EDITOR rusrp.toml
-```
+`sudo ninja -C build install` places a starter config at `/etc/rusrp/rusrp.toml` on first install. On upgrades it is left untouched. An annotated reference copy is always at `/etc/rusrp/rusrp.toml.example`.
 
 Key settings:
 
@@ -78,7 +75,7 @@ Key settings:
 | `[usrp]` | `remote_host` | IP of your ASL3 server |
 | `[usrp]` | `remote_port` | chan_usrp port on ASL3 (default 34001) |
 | `[usrp]` | `local_port` | UDP port to bind locally (default 32001) |
-| `[audio]` | `alsa_device` | ALSA device string (e.g. `hw:1,0`) |
+| `[audio]` | `alsa_device` | ALSA device string — use `plughw:` prefix (e.g. `plughw:1,0`) |
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
 | `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS) |
 | `[logic]` | `hid_device` | hidraw device (e.g. `/dev/hidraw0`) |
@@ -92,55 +89,36 @@ See `config/rusrp.toml.example` for all options with comments.
 
 ## Running
 
-### Directly
-
-```bash
-./build/src/rusrp -c rusrp.toml
-```
+rusrp accesses hardware directly (ALSA, hidraw) and runs as root — either via systemd or `sudo` for testing.
 
 ### With systemd (recommended)
 
-The installed unit is a template (`rusrp@.service`). The instance name is used as the config filename under `/etc/rusrp/`.
-
 ```bash
-# Install config for an instance named "node1"
-sudo cp rusrp.toml /etc/rusrp/node1.toml
+# Install places the binary, unit file, udev rule, and — on first install only —
+# a starter config at /etc/rusrp/rusrp.toml. Edit it before starting:
+sudo $EDITOR /etc/rusrp/rusrp.toml
 
 # Enable and start
-sudo systemctl enable --now rusrp@node1
+sudo systemctl enable --now rusrp
 
 # View logs
-journalctl -u rusrp@node1 -f
+journalctl -u rusrp -f
 ```
 
-Multiple instances for multiple radio links:
+### Testing / CLI
 
 ```bash
-sudo systemctl enable --now rusrp@node1
-sudo systemctl enable --now rusrp@node2
+sudo ./build/src/rusrp -c rusrp.toml
 ```
 
-## Permissions
+## udev rule
 
-rusrp needs access to two device types. Add your user to the appropriate groups so it can run without `sudo`:
+The CM119A exposes VOLDN as a keyboard key. Without a udev rule, the kernel treats a continuous carrier (COS active) as a held KEY_VOLUMEDOWN and will silently drain system volume over time.
 
-```bash
-sudo usermod -aG audio   $USER   # ALSA capture and playback
-sudo usermod -aG plugdev $USER   # hidraw (set by the udev rule below)
-```
-
-Log out and back in (or `newgrp audio && newgrp plugdev`) for the group changes to take effect.
-
-## udev rule (recommended)
-
-The CM119A exposes VOLDN as a keyboard key. Without a udev rule, the kernel treats a continuous carrier (COS active) as a held KEY_VOLUMEDOWN, silently reducing system volume over time.
-
-The rule is installed automatically by `sudo ninja -C build install`. To install manually:
+The rule (`udev/90-cm119a.rules`) is installed automatically by `sudo ninja -C build install`. After install or after replugging the device, reload:
 
 ```bash
-sudo cp udev/90-cm119a.rules /etc/udev/rules.d/
-sudo udevadm control --reload
-sudo udevadm trigger
+sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 ## Finding your ALSA and HID devices

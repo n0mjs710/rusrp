@@ -1,5 +1,5 @@
 [Unit]
-Description=rusrp - Remote USRP (%i)
+Description=rusrp - Remote USRP
 Documentation=https://github.com/n0mjs710/rusrp
 After=network-online.target
 Wants=network-online.target
@@ -8,7 +8,7 @@ StartLimitBurst=5
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/rusrp -c /etc/rusrp/%i.toml
+ExecStart=/usr/local/bin/rusrp
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=10
@@ -19,13 +19,8 @@ WatchdogSec=5
 
 # Security hardening
 NoNewPrivileges=yes
-ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-# Allow access to ALSA and HID devices
-DeviceAllow=/dev/snd rw
-DeviceAllow=char-hidraw rw
-SupplementaryGroups=audio
 
 [Install]
 WantedBy=multi-user.target

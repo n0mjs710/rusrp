@@ -44,7 +44,7 @@ if systemd_system_unit_dir == ''
 endif
 
 install_data(
-  'systemd/rusrp@.service',
+  'systemd/rusrp.service',
   install_dir : systemd_system_unit_dir,
 )
 
@@ -52,3 +52,5 @@ install_data(
   'udev/90-cm119a.rules',
   install_dir : get_option('sysconfdir') / '../lib/udev/rules.d',
 )
+
+meson.add_install_script('scripts/post_install.sh')

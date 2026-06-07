@@ -156,7 +156,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to load config: %s\n", config_path);
         return 1;
     }
-    sd_journal_print(LOG_INFO, "usrp-remote-link starting, config: %s", config_path);
+    sd_journal_print(LOG_INFO, "rusrp starting, config: %s", config_path);
 
     /* ── signals ── */
     struct sigaction sa = { .sa_handler = sig_handler };
@@ -225,7 +225,7 @@ int main(int argc, char *argv[])
 
     /* ── ready ── */
     sd_notify(0, "READY=1");
-    sd_journal_print(LOG_INFO, "usrp-remote-link ready");
+    sd_journal_print(LOG_INFO, "rusrp ready");
 
     /* ── main loop ── */
     while (!atomic_load(&g_stop)) {
@@ -233,7 +233,7 @@ int main(int argc, char *argv[])
         telemetry_log(tel, alsa, in_proc, out_proc, logic, jb, wd);
     }
 
-    sd_journal_print(LOG_INFO, "usrp-remote-link stopping");
+    sd_journal_print(LOG_INFO, "rusrp stopping");
     sd_notify(0, "STOPPING=1");
 
     /* ── shutdown: reverse init order ──
@@ -256,7 +256,7 @@ int main(int argc, char *argv[])
     return 0;
 
 fail:
-    sd_journal_print(LOG_ERR, "usrp-remote-link: initialization failed");
+    sd_journal_print(LOG_ERR, "rusrp: initialization failed");
     sd_notify(0, "STOPPING=1");
     /* Signal playback thread to stop before joining. */
     atomic_store(&g_stop, true);
