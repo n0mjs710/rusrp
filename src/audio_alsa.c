@@ -84,8 +84,11 @@ static void *capture_thread_fn(void *arg)
         if (n < 0) {
             int err = snd_pcm_recover(a->capture, (int)n, /*silent=*/1);
             if (err < 0) {
-                sd_journal_print(LOG_ERR, "alsa: capture unrecoverable: %s",
-                                 snd_strerror(err));
+                /* Suppress error on clean shutdown — snd_pcm_drop() in
+                 * audio_alsa_destroy() intentionally interrupts readi. */
+                if (!atomic_load_explicit(&a->stop, memory_order_relaxed))
+                    sd_journal_print(LOG_ERR, "alsa: capture unrecoverable: %s",
+                                     snd_strerror(err));
                 break;
             }
             continue;
