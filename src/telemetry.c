@@ -79,12 +79,16 @@ void telemetry_log(telemetry_t *tel,
     tel->prev_input_active  = input_active;
     tel->prev_output_active = output_active;
 
-    /* DEBUG: periodic heartbeat at the configured interval. */
-    if (now - tel->last_log_ts >=
-        (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
+    /* DEBUG: periodic heartbeat — only emitted when level=debug is configured. */
+    if (tel->cfg->logging.level <= LOG_LEVEL_DEBUG &&
+        now - tel->last_log_ts >=
+            (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
         tel->last_log_ts = now;
         log_status(LOG_DEBUG, in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active, jitter, overruns, underruns);
+    } else if (now - tel->last_log_ts >=
+                   (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
+        tel->last_log_ts = now; /* still advance the clock to avoid drift */
     }
 }
 
