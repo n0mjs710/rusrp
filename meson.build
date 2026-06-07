@@ -13,6 +13,7 @@ add_project_arguments('-D_GNU_SOURCE', language : 'c')
 alsa_dep   = dependency('alsa')
 sd_dep     = dependency('libsystemd')
 thread_dep = dependency('threads')
+m_dep      = cc.find_library('m')
 
 tomlc99_lib = static_library('tomlc99',
   files('vendor/tomlc99/toml.c'),
