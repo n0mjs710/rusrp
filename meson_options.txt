@@ -1,0 +1,5 @@
+option('systemd_system_unit_dir',
+  type        : 'string',
+  value       : '',
+  description : 'systemd system unit install dir (empty = auto-detect via pkg-config)',
+)

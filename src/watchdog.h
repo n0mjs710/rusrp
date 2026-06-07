@@ -1,0 +1,22 @@
+#pragma once
+
+#include "config.h"
+#include "logic_hid.h"
+#include "jitter_buffer.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef struct watchdog watchdog_t;
+
+int  watchdog_create(watchdog_t **wd, const config_t *cfg,
+                     logic_hid_t *logic, jitter_buffer_t *jb);
+
+/* Call on every received USRP packet to reset the network timeout clock. */
+void watchdog_packet_received(watchdog_t *wd);
+
+/* Call on USRP key state change. */
+void watchdog_key_event(watchdog_t *wd, bool keyed);
+
+uint64_t watchdog_event_count(const watchdog_t *wd);
+
+void watchdog_destroy(watchdog_t *wd);

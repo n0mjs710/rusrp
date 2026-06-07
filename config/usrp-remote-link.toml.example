@@ -1,0 +1,30 @@
+[usrp]
+remote_host = "198.51.100.10"   # AllStarLink server IP
+remote_port = 34001
+local_port  = 32001
+bind_address = "0.0.0.0"
+
+[audio]
+alsa_device     = "hw:1,0"
+input_gain_db   = 0.0           # -12.0 to +12.0 dB
+output_gain_db  = 0.0
+input_highpass  = false         # 300 Hz HPF — blocks CTCSS/DCS
+output_highpass = false
+
+[logic]
+hid_device         = "/dev/hidraw0"
+output_active_gpio = 3          # CM119A GPIO3 (pin 13) — PTT
+input_active_low   = false      # VOLDN: high = COS active
+output_active_low  = true       # GPIO3: low = PTT asserted
+
+[network]
+jitter_buffer_ms = 100          # 40–250 ms
+
+[watchdog]
+network_timeout_ms        = 500   # no USRP traffic → force unkey
+output_active_tail_ms     = 100   # hold output_active after UNKEY
+startup_output_inhibit_ms = 2000  # suppress output at boot
+
+[logging]
+level               = "info"    # debug, info, warn, error
+status_interval_sec = 10
