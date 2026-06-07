@@ -114,6 +114,11 @@ int logic_hid_set_output(logic_hid_t *l, bool active)
     return hid_write_gpio(l, active);
 }
 
+bool logic_hid_output_active(const logic_hid_t *l)
+{
+    return atomic_load_explicit(&l->output_desired, memory_order_relaxed);
+}
+
 void logic_hid_destroy(logic_hid_t *l)
 {
     if (!l) return;

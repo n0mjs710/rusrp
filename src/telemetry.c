@@ -46,8 +46,9 @@ void telemetry_log(telemetry_t *tel,
     if (in_proc)  audio_proc_get_levels(in_proc,  &in_peak,  &in_rms);
     if (out_proc) audio_proc_get_levels(out_proc, &out_peak, &out_rms);
 
-    bool input_state  = logic ? logic_hid_input_active(logic) : false;
-    float jitter      = jb    ? jitter_buffer_estimate_ms(jb) : 0.0f;
+    bool input_state  = logic ? logic_hid_input_active(logic)  : false;
+    bool output_state = logic ? logic_hid_output_active(logic) : false;
+    float jitter      = jb    ? jitter_buffer_estimate_ms(jb)  : 0.0f;
 
     sd_journal_print(LOG_INFO,
         "status: in=%.1f/%.1f dBFS out=%.1f/%.1f dBFS "
@@ -56,7 +57,7 @@ void telemetry_log(telemetry_t *tel,
         in_peak,  in_rms,
         out_peak, out_rms,
         (int)input_state,
-        (int)(logic ? !logic_hid_input_active(logic) : 0), /* placeholder */
+        (int)output_state,
         jitter,
         (unsigned long long)overruns,
         (unsigned long long)underruns);

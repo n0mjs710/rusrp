@@ -13,5 +13,8 @@ bool logic_hid_input_active(const logic_hid_t *l);
 /* Drive output_active. Thread-safe. */
 int  logic_hid_set_output(logic_hid_t *l, bool active);
 
+/* Read the last-asserted output_active state. Thread-safe. */
+bool logic_hid_output_active(const logic_hid_t *l);
+
 /* Releases output_active before closing the HID device. */
 void logic_hid_destroy(logic_hid_t *l);

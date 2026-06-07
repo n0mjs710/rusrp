@@ -43,9 +43,15 @@ static int open_pcm(snd_pcm_t **handle, const char *device,
 
     unsigned int rate = SAMPLE_RATE;
     snd_pcm_hw_params_set_rate_near(*handle, params, &rate, 0);
-    if (rate != SAMPLE_RATE)
-        sd_journal_print(LOG_WARNING, "alsa: %s %s rate %u Hz (wanted %u)",
-                         device, dir, rate, SAMPLE_RATE);
+    if (rate != SAMPLE_RATE) {
+        sd_journal_print(LOG_ERR,
+            "alsa: %s (%s) only supports %u Hz, need %u Hz — "
+            "use plughw: instead of hw: in alsa_device config",
+            device, dir, rate, SAMPLE_RATE);
+        snd_pcm_close(*handle);
+        *handle = NULL;
+        return -1;
+    }
 
     snd_pcm_uframes_t period = FRAME_SAMPLES;
     snd_pcm_hw_params_set_period_size_near(*handle, params, &period, 0);
