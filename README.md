@@ -11,7 +11,7 @@ Repeater controller                      AllStarLink server
         │                                        │
    audio out ──► ALSA capture                    │
         │            │                           │
-        │         300 Hz HPF                      │
+        │         250 Hz HPF                      │
         │            │                           │
         │        USRP TX ─────────────────────► ASL3 chan_usrp
         │                                        │
@@ -95,7 +95,7 @@ See `config/rusrp.toml.example` for all options with comments.
 ### Directly
 
 ```bash
-./build/rusrp -c rusrp.toml
+./build/src/rusrp -c rusrp.toml
 ```
 
 ### With systemd (recommended)
@@ -119,6 +119,17 @@ Multiple instances for multiple radio links:
 sudo systemctl enable --now rusrp@node1
 sudo systemctl enable --now rusrp@node2
 ```
+
+## Permissions
+
+rusrp needs access to two device types. Add your user to the appropriate groups so it can run without `sudo`:
+
+```bash
+sudo usermod -aG audio   $USER   # ALSA capture and playback
+sudo usermod -aG plugdev $USER   # hidraw (set by the udev rule below)
+```
+
+Log out and back in (or `newgrp audio && newgrp plugdev`) for the group changes to take effect.
 
 ## udev rule (recommended)
 
