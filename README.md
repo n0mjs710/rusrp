@@ -1,6 +1,6 @@
 # rusrp — Remote USRP
 
-> **Alpha — not production ready.** This project is in early testing. It may not work, may behave unexpectedly, and will change without notice. We are not accepting bug reports at this stage. If you're experimenting, we'd love to hear what you find — but please don't deploy this on a live repeater you depend on.
+> **Alpha — not production ready.** This project is in early testing. It may not work, may behave unexpectedly, and will change without notice. We are not accepting bug reports at this stage. If you're experimenting, we'd love to hear what you find (just not as issues in github); and please don't deploy this on a live repeater you depend on.
 
 A lightweight audio/control terminal for amateur radio repeater linking. Runs on Linux SBCs and connects an analog repeater controller to an [AllStarLink (ASL3)](https://www.allstarlink.org/) server using the USRP protocol over UDP.
 
@@ -13,7 +13,7 @@ Repeater controller                      AllStarLink server
         │                                        │
    audio out ──► ALSA capture                    │
         │            │                           │
-        │         250 Hz HPF                      │
+        │         250 Hz HPF                     │
         │            │                           │
         │        USRP TX ─────────────────────► ASL3 chan_usrp
         │                                        │
