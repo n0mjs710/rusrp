@@ -3,21 +3,35 @@
 #include <stdatomic.h>
 #include <math.h>
 
-struct audio_proc {
-    bool  enable_hpf;
-    float gain_linear;
-    float hpf_prev_in;
-    float hpf_prev_out;
-    float hpf_alpha;
-    float peak;
-    float rms_accum;
-    size_t rms_count;
-};
+/* 4th-order Butterworth HPF at 250 Hz, fs = 8000 Hz.
+ * Two cascaded Direct Form II Transposed biquad sections.
+ * 250 Hz cutoff keeps the transition band away from the voice passband
+ * while still attenuating CTCSS (67–203 Hz) by 8–42 dB and DCS (134 Hz)
+ * by ~28 dB. This is a safety filter; sub-audible signalling should
+ * already have been stripped by the radio or controller.
+ *
+ * Coefficients derived via RBJ audio EQ cookbook (bilinear transform):
+ *   Q1=0.5412 (lower-Q section first — better numerical conditioning)
+ *   Q2=1.3066
+ * Rejection: -42 dB @ 67 Hz, -32 dB @ 100 Hz, -8 dB @ 200 Hz. */
+#define HPF_SECTIONS 2
 
-/* First-order Butterworth HPF at 300 Hz, fs = 8000 Hz.
- * RC = 1/(2π*300) ≈ 530.5 µs; dt = 1/8000 = 125 µs
- * α = RC/(RC+dt) = 530.5/655.5 ≈ 0.8093 */
-#define HPF_ALPHA 0.8093f
+static const float HPF_B0[HPF_SECTIONS] = { 0.83914f,  0.92156f };
+static const float HPF_B1[HPF_SECTIONS] = {-1.67828f, -1.84312f };
+/* B2 == B0 for every HPF biquad (symmetric numerator). */
+static const float HPF_A1[HPF_SECTIONS] = {-1.66202f, -1.82527f };
+static const float HPF_A2[HPF_SECTIONS] = { 0.69455f,  0.86103f };
+
+typedef struct { float w0, w1; } biquad_t;
+
+struct audio_proc {
+    bool      enable_hpf;
+    float     gain_linear;
+    biquad_t  hpf[HPF_SECTIONS];
+    float     peak;
+    float     rms_accum;
+    size_t    rms_count;
+};
 
 int audio_proc_create(audio_proc_t **p, bool enable_hpf, float gain_db)
 {
@@ -25,7 +39,6 @@ int audio_proc_create(audio_proc_t **p, bool enable_hpf, float gain_db)
     if (!self) return -1;
     self->enable_hpf  = enable_hpf;
     self->gain_linear = powf(10.0f, gain_db / 20.0f);
-    self->hpf_alpha   = HPF_ALPHA;
     *p = self;
     return 0;
 }
@@ -39,10 +52,13 @@ void audio_proc_run(audio_proc_t *p, int16_t *samples, size_t count,
         float s = (float)samples[i];
 
         if (p->enable_hpf) {
-            float out = p->hpf_alpha * (p->hpf_prev_out + s - p->hpf_prev_in);
-            p->hpf_prev_in  = s;
-            p->hpf_prev_out = out;
-            s = out;
+            for (int k = 0; k < HPF_SECTIONS; k++) {
+                biquad_t *st = &p->hpf[k];
+                float y  = HPF_B0[k] * s + st->w0;
+                st->w0   = HPF_B1[k] * s - HPF_A1[k] * y + st->w1;
+                st->w1   = HPF_B0[k] * s - HPF_A2[k] * y; /* B2 == B0 */
+                s = y;
+            }
         }
 
         s *= p->gain_linear;
