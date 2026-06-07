@@ -13,13 +13,13 @@ Repeater controller                      AllStarLink server
         │                                        │
    audio out ──► ALSA capture                    │
         │            │                           │
-        │         250 Hz HPF                     │
+        │        250 Hz HPF                      │
         │            │                           │
-        │        USRP TX ─────────────────────► ASL3 chan_usrp
+        │        USRP TX ────────────────► ASL3 chan_usrp
         │                                        │
-   audio in ◄── ALSA playback              USRP RX
+   audio in ◄── ALSA playback                 USRP RX
         │            ▲                           │
-        │        jitter buffer ◄─────────────────┘
+        │      jitter buffer ◄───────────────────┘
         │
    COS input ──► VOLDN (HID input report byte 0 bit 1)
    PTT output ◄─ GPIO3 (HID output report)
