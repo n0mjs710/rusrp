@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sys/ioctl.h>
@@ -48,15 +49,18 @@ static void *poll_thread_fn(void *arg)
     uint8_t buf[4];
 
     while (!atomic_load_explicit(&l->stop, memory_order_relaxed)) {
+        struct pollfd pfd = { .fd = l->fd, .events = POLLIN };
+        if (poll(&pfd, 1, 200) <= 0)
+            continue;
+        if (!(pfd.revents & POLLIN))
+            continue;
+
         ssize_t n = read(l->fd, buf, sizeof(buf));
         if (n < 1) continue;
 
         bool raw = (buf[0] & VOLDN_BIT) != 0;
         bool active = raw ^ l->input_active_low;
         atomic_store_explicit(&l->input_active, active, memory_order_relaxed);
-
-        bool desired = atomic_load_explicit(&l->output_desired, memory_order_relaxed);
-        hid_write_gpio(l, desired);
     }
     return NULL;
 }
@@ -82,10 +86,6 @@ int logic_hid_create(logic_hid_t **out, const config_t *cfg)
 
     /* Ensure output_active starts deasserted (fail-safe). */
     hid_write_gpio(l, false);
-
-    /* Set 200ms read timeout so poll thread wakes to check stop flag. */
-    struct timeval tv = { .tv_usec = 200000 };
-    setsockopt(l->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     if (pthread_create(&l->poll_thread, NULL, poll_thread_fn, l) != 0) {
         sd_journal_print(LOG_ERR, "logic: pthread_create: %m");
