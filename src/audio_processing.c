@@ -92,6 +92,13 @@ void audio_proc_get_levels(const audio_proc_t *p,
     }
 }
 
+void audio_proc_reset_levels(audio_proc_t *p)
+{
+    p->peak      = 0.0f;
+    p->rms_accum = 0.0f;
+    p->rms_count = 0;
+}
+
 void audio_proc_destroy(audio_proc_t *p)
 {
     free(p);

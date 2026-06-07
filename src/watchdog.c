@@ -117,11 +117,13 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
         /* KEY: assert output_active (if past startup inhibit). */
         atomic_store(&wd->key_end_ts, 0);
         logic_hid_set_output(wd->logic, true);
-        sd_journal_print(LOG_DEBUG, "watchdog: keyed");
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
+            sd_journal_print(LOG_DEBUG, "watchdog: keyed");
     } else if (!keyed && prev) {
         /* UNKEY: start tail timer, don't release yet. */
         atomic_store(&wd->key_end_ts, monotonic_ms());
-        sd_journal_print(LOG_DEBUG, "watchdog: unkeyed, starting tail timer");
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
+            sd_journal_print(LOG_DEBUG, "watchdog: unkeyed, starting tail timer");
     }
 }
 

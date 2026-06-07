@@ -230,7 +230,7 @@ int main(int argc, char *argv[])
     /* ── main loop ── */
     while (!atomic_load(&g_stop)) {
         sleep(1);
-        telemetry_log(tel, alsa, in_proc, out_proc, logic, jb);
+        telemetry_log(tel, alsa, in_proc, out_proc, logic, jb, wd);
     }
 
     sd_journal_print(LOG_INFO, "usrp-remote-link stopping");
