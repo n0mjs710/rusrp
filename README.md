@@ -6,23 +6,34 @@ A lightweight audio/control terminal for amateur radio repeater linking. Runs on
 
 One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session.
 
+## Terminology
+
+Direction in rusrp is always described from the **analog side** (the CM119A). The same line means different things depending on what is connected:
+
+| rusrp term | CM119A pin | Connected to a **radio** | Connected to a **controller port** |
+|---|---|---|---|
+| **input_active** | VOLDN (pin 48) | COR/COS from the radio | PTT out from the controller |
+| **output_active** | GPIO3 (pin 13) | PTT to the radio | COR/COS in to the controller |
+
+A repeater controller sees rusrp as a radio. A radio sees rusrp as a controller. The line is the same; only the label on the far end changes. The `input_active_low` and `output_active_low` config settings describe the **electrical polarity** of the line — not what device it connects to.
+
 ## How it works
 
 ```
-Repeater controller                      AllStarLink server
+Analog device                            AllStarLink server
         │                                        │
    audio out ──► ALSA capture                    │
         │            │                           │
         │        250 Hz HPF                      │
         │            │                           │
-        │        USRP TX ────────────────► ASL3 chan_usrp
+        │        USRP ───────────────────► ASL3 chan_usrp
         │                                        │
-   audio in ◄── ALSA playback                 USRP RX
-        │            ▲                           │
-        │      jitter buffer ◄───────────────────┘
+   audio in ◄── ALSA playback               USRP ◄─┘
+        │            ▲
+        │      jitter buffer
         │
-   COS input ──► VOLDN (HID input report byte 0 bit 1)
-   PTT output ◄─ GPIO3 (HID output report)
+  input_active ──► VOLDN (HID input, byte 0 bit 1)
+  output_active ◄─ GPIO3 (HID output report)
 ```
 
 - **Audio**: 8 kHz mono 16-bit, 20 ms frames
@@ -80,10 +91,10 @@ Key settings:
 | `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS) |
 | `[logic]` | `hid_device` | hidraw device (e.g. `/dev/hidraw0`) |
 | `[logic]` | `output_active_gpio` | GPIO number for PTT (default 3) |
-| `[logic]` | `input_active_low` | Invert COS polarity if needed |
-| `[logic]` | `output_active_low` | Invert PTT polarity if needed |
+| `[logic]` | `input_active_low` | True if input_active line is asserted low |
+| `[logic]` | `output_active_low` | True if output_active line is asserted low |
 | `[network]` | `jitter_buffer_ms` | Jitter buffer depth (40–250 ms) |
-| `[watchdog]` | `network_timeout_ms` | Force PTT release after this many ms with no USRP traffic |
+| `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 
 See `config/rusrp.toml.example` for all options with comments.
 
