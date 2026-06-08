@@ -29,7 +29,7 @@ static void sig_handler(int sig)
     atomic_store(&g_stop, true);
 }
 
-/* ── TX path: capture → DSP → USRP ─────────────────────────────────────── */
+/* ── Input path: capture → DSP → USRP ──────────────────────────────────── */
 
 typedef struct {
     usrp_transport_t        *transport;
@@ -81,7 +81,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
     }
 }
 
-/* ── RX path: USRP → watchdog → jitter buffer ───────────────────────────── */
+/* ── Output path: USRP → watchdog → jitter buffer ──────────────────────── */
 
 typedef struct {
     watchdog_t      *wd;
@@ -194,7 +194,7 @@ int main(int argc, char *argv[])
                           cfg.audio.output_highpass,
                           cfg.audio.output_gain_db) != 0) goto fail;
 
-    /* ── init: ALSA (capture callback drives the TX path) ── */
+    /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};
     atomic_init(&tx_ctx.tx_seq,     0);
     atomic_init(&tx_ctx.prev_keyed, false);
