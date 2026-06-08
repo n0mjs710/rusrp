@@ -47,3 +47,4 @@ void usrp_build_key(uint8_t *buf, uint32_t seq, uint32_t keyup)
     h[5] = htonl((uint32_t)USRP_TYPE_VOICE);
     /* audio payload remains zero (silence) */
 }
+
