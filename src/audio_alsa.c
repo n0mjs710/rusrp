@@ -19,6 +19,7 @@ struct audio_alsa {
     pthread_t              capture_thread;
     bool                   capture_thread_started;
     atomic_bool            stop;
+    atomic_bool            drain_requested;
     atomic_uint_least64_t  overruns;
     atomic_uint_least64_t  underruns;
 };
@@ -56,6 +57,15 @@ static int open_pcm(snd_pcm_t **handle, const char *device,
     snd_pcm_uframes_t period = FRAME_SAMPLES;
     snd_pcm_hw_params_set_period_size_near(*handle, params, &period, 0);
 
+    /* Cap playback buffer to 4 periods (80 ms). Without this, plughw may
+     * negotiate a multi-second buffer; snd_pcm_writei returns immediately
+     * until the buffer is full, causing the jitter-buffer playout cursor to
+     * race far ahead of arriving network packets and discard them as "late". */
+    if (stream == SND_PCM_STREAM_PLAYBACK) {
+        snd_pcm_uframes_t buf = FRAME_SAMPLES * 4;
+        snd_pcm_hw_params_set_buffer_size_near(*handle, params, &buf);
+    }
+
     err = snd_pcm_hw_params(*handle, params);
     if (err < 0) {
         sd_journal_print(LOG_ERR, "alsa: hw_params %s (%s): %s",
@@ -64,6 +74,24 @@ static int open_pcm(snd_pcm_t **handle, const char *device,
         *handle = NULL;
         return -1;
     }
+
+    /* Playback: start as soon as one period is buffered, not when the full
+     * buffer is filled. This prevents silence accumulating ahead of audio. */
+    if (stream == SND_PCM_STREAM_PLAYBACK) {
+        snd_pcm_sw_params_t *sw;
+        snd_pcm_sw_params_alloca(&sw);
+        snd_pcm_sw_params_current(*handle, sw);
+        snd_pcm_sw_params_set_start_threshold(*handle, sw, FRAME_SAMPLES);
+        snd_pcm_sw_params(*handle, sw);
+    }
+
+    snd_pcm_uframes_t actual_period = 0, actual_buf = 0;
+    snd_pcm_hw_params_get_period_size(params, &actual_period, NULL);
+    snd_pcm_hw_params_get_buffer_size(params, &actual_buf);
+    sd_journal_print(LOG_DEBUG, "alsa: %s period=%lu frames  buffer=%lu frames (%.0f ms)",
+                     dir, actual_period, actual_buf,
+                     (double)actual_buf * 1000.0 / SAMPLE_RATE);
+
     return 0;
 }
 
@@ -109,9 +137,10 @@ int audio_alsa_create(audio_alsa_t **out, const config_t *cfg,
 
     a->cap_cb   = cap_cb;
     a->userdata = userdata;
-    atomic_init(&a->stop,      false);
-    atomic_init(&a->overruns,  0);
-    atomic_init(&a->underruns, 0);
+    atomic_init(&a->stop,            false);
+    atomic_init(&a->drain_requested, false);
+    atomic_init(&a->overruns,        0);
+    atomic_init(&a->underruns,       0);
 
     if (open_pcm(&a->capture,  cfg->audio.alsa_device, SND_PCM_STREAM_CAPTURE)  < 0 ||
         open_pcm(&a->playback, cfg->audio.alsa_device, SND_PCM_STREAM_PLAYBACK) < 0) {
@@ -134,6 +163,14 @@ int audio_alsa_create(audio_alsa_t **out, const config_t *cfg,
 
 int audio_alsa_write(audio_alsa_t *a, const int16_t *samples, size_t count)
 {
+    /* On drain request: drop queued audio and restart the stream clean.
+     * Called from the playback thread so it's safe to touch the PCM handle. */
+    if (atomic_exchange_explicit(&a->drain_requested, false, memory_order_relaxed)) {
+        snd_pcm_drop(a->playback);
+        snd_pcm_prepare(a->playback);
+        return 0;
+    }
+
     snd_pcm_sframes_t n = snd_pcm_writei(a->playback, samples,
                                           (snd_pcm_uframes_t)count);
     if (n == -EPIPE) {
@@ -147,6 +184,11 @@ int audio_alsa_write(audio_alsa_t *a, const int16_t *samples, size_t count)
         return (err < 0) ? -1 : 0;
     }
     return 0;
+}
+
+void audio_alsa_request_drain(audio_alsa_t *a)
+{
+    atomic_store_explicit(&a->drain_requested, true, memory_order_relaxed);
 }
 
 void audio_alsa_get_stats(const audio_alsa_t *a,

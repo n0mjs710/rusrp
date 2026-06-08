@@ -33,14 +33,21 @@ struct logic_hid {
 static int hid_write_gpio(logic_hid_t *l, bool active)
 {
     bool pin_high = active ^ l->output_active_low;
-    uint8_t report[4] = {
+    /* hidraw requires report ID as byte 0 even for devices without numbered
+     * reports; data begins at byte 1. Total 5 bytes for the 4-byte CM119A report. */
+    uint8_t report[5] = {
+        0x00,                                       /* report ID (always 0) */
         0x00,                                       /* HID_OR0: GPIO mode */
         pin_high ? (uint8_t)l->gpio_bit : 0x00,    /* HID_OR1: output data */
         (uint8_t)l->gpio_bit,                       /* HID_OR2: direction=output */
         0x00,                                       /* HID_OR3 */
     };
     ssize_t n = write(l->fd, report, sizeof(report));
-    return (n == (ssize_t)sizeof(report)) ? 0 : -1;
+    if (n != (ssize_t)sizeof(report)) {
+        sd_journal_print(LOG_ERR, "logic: HID write failed (active=%d): %m", (int)active);
+        return -1;
+    }
+    return 0;
 }
 
 static void *poll_thread_fn(void *arg)
@@ -110,7 +117,9 @@ bool logic_hid_input_active(const logic_hid_t *l)
 
 int logic_hid_set_output(logic_hid_t *l, bool active)
 {
-    atomic_store_explicit(&l->output_desired, active, memory_order_relaxed);
+    bool prev = atomic_exchange_explicit(&l->output_desired, active, memory_order_relaxed);
+    if (active == prev)
+        return 0;
     return hid_write_gpio(l, active);
 }
 

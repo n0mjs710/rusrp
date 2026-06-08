@@ -14,11 +14,11 @@ output_highpass = false
 [logic]
 hid_device         = "/dev/hidraw0"
 output_active_gpio = 3          # CM119A GPIO3 (pin 13) — PTT
-input_active_low   = false      # VOLDN: high = COS active
-output_active_low  = true       # GPIO3: low = PTT asserted
+input_active_low   = true       # VOLDN: low = COS active (pulled low through diode)
+output_active_low  = false      # GPIO3: high = PTT asserted (RA40 open-collector driver)
 
 [network]
-jitter_buffer_ms = 100          # 40–250 ms
+jitter_buffer_ms = 60           # multiple of 20 ms (one USRP frame); 60 = 3 frames
 
 [watchdog]
 network_timeout_ms        = 500   # no USRP traffic → force unkey

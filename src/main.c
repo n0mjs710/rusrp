@@ -205,6 +205,7 @@ int main(int argc, char *argv[])
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
         goto fail;
+    watchdog_set_alsa(wd, alsa);
 
     /* ── init: playback thread ── */
     pb_ctx_t pb_ctx = {0};

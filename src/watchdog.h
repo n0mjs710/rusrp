@@ -3,6 +3,7 @@
 #include "config.h"
 #include "logic_hid.h"
 #include "jitter_buffer.h"
+#include "audio_alsa.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -10,6 +11,10 @@ typedef struct watchdog watchdog_t;
 
 int  watchdog_create(watchdog_t **wd, const config_t *cfg,
                      logic_hid_t *logic, jitter_buffer_t *jb);
+
+/* Provide the ALSA handle after audio is initialized, to enable playback
+ * drain on transmission end. */
+void watchdog_set_alsa(watchdog_t *wd, audio_alsa_t *alsa);
 
 /* Call on every received USRP packet to reset the network timeout clock. */
 void watchdog_packet_received(watchdog_t *wd);
