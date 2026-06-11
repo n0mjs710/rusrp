@@ -199,13 +199,15 @@ When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_se
 
 ### Watchdog messages
 
-These appear at DEBUG level during normal operation:
+These appear at DEBUG level during normal operation, in the order they fire for a typical transmission:
 
 | Message | Meaning |
 |---|---|
-| `watchdog: keyed, PTT in N ms` | Input went active; output will assert after the jitter buffer fills (N = `jitter_buffer_ms`) |
-| `watchdog: PTT asserted` | Output is now active |
-| `watchdog: unkeyed, holding output N ms for buffer drain` | Input dropped; output held briefly while buffered audio plays out |
+| `watchdog: input active` | Input signal went active |
+| `watchdog: output pending N ms` | Output will assert after the jitter buffer fills (N = `jitter_buffer_ms`) |
+| `watchdog: output asserted` | Output is now active |
+| `watchdog: input ended` | Input signal dropped |
+| `watchdog: holding output N ms for buffer drain` | Output held briefly while buffered audio plays out |
 
 This appears at WARNING level and indicates something went wrong:
 

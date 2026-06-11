@@ -61,7 +61,7 @@ static void *watchdog_thread_fn(void *arg)
             atomic_store(&wd->ptt_ready_ts, 0);
             logic_hid_set_output(wd->logic, true);
             if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-                sd_journal_print(LOG_DEBUG, "watchdog: PTT asserted");
+                sd_journal_print(LOG_DEBUG, "watchdog: output asserted");
         }
 
         /* Network timeout: no USRP traffic in network_timeout_ms. */
@@ -136,17 +136,19 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
     if (keyed && !prev) {
         /* KEY: flush jitter buffer so it re-seeds to the new transmission's
          * sequence numbers (remote resets seq to 0 each transmission).
-         * Defer PTT by jitter_buffer_ms so the buffer is full and audio
-         * plays the moment the radio keys up. */
+         * Defer output by jitter_buffer_ms so the buffer is full and audio
+         * plays the moment the output keys up. */
         jitter_buffer_flush(wd->jb);
         atomic_store(&wd->key_end_ts, 0);
         uint64_t fire = monotonic_ms() + wd->cfg->network.jitter_buffer_ms;
         atomic_store(&wd->ptt_ready_ts, fire);
-        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "watchdog: keyed, PTT in %u ms",
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG) {
+            sd_journal_print(LOG_DEBUG, "watchdog: input active");
+            sd_journal_print(LOG_DEBUG, "watchdog: output pending %u ms",
                              wd->cfg->network.jitter_buffer_ms);
+        }
     } else if (!keyed && prev) {
-        /* UNKEY: cancel pending PTT, flush buffers to prevent stale audio
+        /* UNKEY: cancel pending output, flush buffers to prevent stale audio
          * bleeding into the next transmission, then hold output while the
          * audio buffer drains. */
         atomic_store(&wd->ptt_ready_ts, 0);
@@ -154,9 +156,11 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
         if (wd->alsa)
             audio_alsa_request_drain(wd->alsa);
         atomic_store(&wd->key_end_ts, monotonic_ms());
-        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "watchdog: unkeyed, holding output %u ms for buffer drain",
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG) {
+            sd_journal_print(LOG_DEBUG, "watchdog: input ended");
+            sd_journal_print(LOG_DEBUG, "watchdog: holding output %u ms for buffer drain",
                              wd->cfg->watchdog.output_active_tail_ms);
+        }
     }
 }
 
