@@ -32,6 +32,7 @@ static void sig_handler(int sig)
 /* ── Input path: capture → DSP → USRP ──────────────────────────────────── */
 
 typedef struct {
+    const config_t          *cfg;
     usrp_transport_t        *transport;
     audio_proc_t            *in_proc;
     logic_hid_t             *logic;
@@ -61,6 +62,8 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
 
     if (keyed && !was_keyed) {
         /* Rising edge: send explicit KEY frame before the first voice frame. */
+        if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
+            sd_journal_print(LOG_DEBUG, "input: active");
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 1);
@@ -74,6 +77,8 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
     } else if (!keyed && was_keyed) {
         /* Falling edge: send explicit UNKEY frame. */
+        if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
+            sd_journal_print(LOG_DEBUG, "input: ended");
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 0);
@@ -199,6 +204,7 @@ int main(int argc, char *argv[])
     atomic_init(&tx_ctx.tx_seq,     0);
     atomic_init(&tx_ctx.prev_keyed, false);
     atomic_init(&tx_ctx.clip_count, 0);
+    tx_ctx.cfg       = &cfg;
     tx_ctx.transport = transport;
     tx_ctx.in_proc   = in_proc;
     tx_ctx.logic     = logic;

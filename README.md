@@ -197,16 +197,23 @@ output-end: out=-14.1pk/-20.3rms dBFS input_active=0 output_active=0 jitter=42.0
 
 When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels and confirms the daemon is alive; levels between transmissions will read near −96 dBFS (silence).
 
-### Watchdog messages
+### Debug messages
 
-These appear at DEBUG level during normal operation, in the order they fire for a typical transmission:
+These appear at DEBUG level during normal operation. Input and output events come from separate code paths and are logged independently.
+
+Input events (analog COS line, logged from the capture path):
 
 | Message | Meaning |
 |---|---|
-| `watchdog: input active` | Input signal went active |
+| `input: active` | Input signal went active |
+| `input: ended` | Input signal dropped |
+
+Output events (network-driven PTT, logged from the watchdog):
+
+| Message | Meaning |
+|---|---|
 | `watchdog: output pending N ms` | Output will assert after the jitter buffer fills (N = `jitter_buffer_ms`) |
 | `watchdog: output asserted` | Output is now active |
-| `watchdog: input ended` | Input signal dropped |
 | `watchdog: holding output N ms for buffer drain` | Output held briefly while buffered audio plays out |
 
 This appears at WARNING level and indicates something went wrong:

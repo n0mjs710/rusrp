@@ -142,11 +142,9 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
         atomic_store(&wd->key_end_ts, 0);
         uint64_t fire = monotonic_ms() + wd->cfg->network.jitter_buffer_ms;
         atomic_store(&wd->ptt_ready_ts, fire);
-        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG) {
-            sd_journal_print(LOG_DEBUG, "watchdog: input active");
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "watchdog: output pending %u ms",
                              wd->cfg->network.jitter_buffer_ms);
-        }
     } else if (!keyed && prev) {
         /* UNKEY: cancel pending output, flush buffers to prevent stale audio
          * bleeding into the next transmission, then hold output while the
@@ -156,11 +154,9 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
         if (wd->alsa)
             audio_alsa_request_drain(wd->alsa);
         atomic_store(&wd->key_end_ts, monotonic_ms());
-        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG) {
-            sd_journal_print(LOG_DEBUG, "watchdog: input ended");
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "watchdog: holding output %u ms for buffer drain",
                              wd->cfg->watchdog.output_active_tail_ms);
-        }
     }
 }
 
