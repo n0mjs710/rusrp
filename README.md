@@ -1,6 +1,6 @@
 # rusrp — Remote USRP
 
-> **Alpha — not production ready.** This project is in early testing. It may not work, may behave unexpectedly, and will change without notice. We are not accepting bug reports at this stage. If you're experimenting, we'd love to hear what you find (just not as issues in github); and please don't deploy this on a live repeater you depend on.
+> **Beta — believed working, still in testing.** Basic operation in both directions appears functional, but this has not yet been tested against a live repeater. Behaviour may change without notice. We are not accepting bug reports at this stage. If you're experimenting, we'd love to hear what you find (just not as issues in github); and please don't deploy this on a live repeater you depend on.
 
 A lightweight audio/control terminal for amateur radio repeater linking. Runs on Linux SBCs and connects an analog repeater controller to an [AllStarLink (ASL3)](https://www.allstarlink.org/) server using the USRP protocol over UDP.
 
@@ -24,11 +24,13 @@ Analog device                            AllStarLink server
         │                                        │
    audio out ──► ALSA capture                    │
         │            │                           │
-        │        250 Hz HPF                      │
+        │        250 Hz HPF  (input_highpass)    │
         │            │                           │
-        │        USRP ───────────────────► ASL3 chan_usrp
+        │           USRP ───────────────► ASL3 chan_usrp
         │                                        │
-   audio in ◄── ALSA playback               USRP ◄─┘
+   audio in ◄── ALSA playback             USRP ◄─┘
+        │            ▲
+        │        250 Hz HPF  (output_highpass)
         │            ▲
         │      jitter buffer
         │
@@ -39,7 +41,7 @@ Analog device                            AllStarLink server
 - **Audio**: 8 kHz mono 16-bit, 20 ms frames
 - **HID device**: CM108/CM119A — COS on VOLDN (pin 48), PTT on GPIO3 (pin 13)
 - **USRP protocol**: 352-byte UDP frames, network byte order (ASL3 only)
-- **DSP**: 4th-order Butterworth high-pass filter at 250 Hz (blocks CTCSS/DCS tones)
+- **DSP**: 4th-order Butterworth high-pass filter at 250 Hz on both paths, enabled independently (blocks CTCSS/DCS tones)
 - **Jitter buffer**: 16-slot sequence-ordered buffer with silence injection for gaps
 - **Watchdog**: sd_notify integration; network timeout forces PTT release
 
@@ -88,12 +90,13 @@ Key settings:
 | `[usrp]` | `local_port` | UDP port to bind locally (default 32001) |
 | `[audio]` | `alsa_device` | ALSA device string — use `plughw:` prefix (e.g. `plughw:1,0`) |
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
-| `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS) |
+| `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS tones from the analog side) |
+| `[audio]` | `output_highpass` | Enable 250 Hz HPF on playback audio (blocks CTCSS/DCS tones from the network side) |
 | `[logic]` | `hid_device` | hidraw device (e.g. `/dev/hidraw0`) |
 | `[logic]` | `output_active_gpio` | GPIO number for PTT (default 3) |
-| `[logic]` | `input_active_low` | True if input_active line is asserted low |
-| `[logic]` | `output_active_low` | True if output_active line is asserted low |
-| `[network]` | `jitter_buffer_ms` | Jitter buffer depth (40–250 ms) |
+| `[logic]` | `input_active_low` | `true` if the input signal is active when the line is pulled low (most hardware) |
+| `[logic]` | `output_active_low` | `true` if the output signal is active-low (open-collector driver — most hardware) |
+| `[network]` | `jitter_buffer_ms` | Jitter buffer depth, 40–250 ms; non-multiples of 20 round up to the next frame |
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 
 See `config/rusrp.toml.example` for all options with comments.
@@ -142,6 +145,91 @@ aplay -l | grep -i cm
 ls -la /dev/hidraw*
 udevadm info /dev/hidraw0 | grep -E "(VENDOR|MODEL|NAME)"
 ```
+
+## Logs
+
+rusrp logs to the systemd journal. Config validation errors also print to stderr so they are visible whether you start via `systemctl` or directly from a terminal.
+
+```bash
+journalctl -u rusrp -f             # follow live
+journalctl -u rusrp --since today  # today's entries
+```
+
+### Startup sequence
+
+A clean start produces these INFO lines in order:
+
+```
+rusrp starting, config: /etc/rusrp/rusrp.toml
+alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
+usrp: listening on :32001 → 198.51.100.10:34001
+logic: opened /dev/hidraw0 (gpio3, out_low=1)
+rusrp ready
+```
+
+### Status lines
+
+A status line is written at the end of every transmission, summarising that transmission. The prefix tells you what event triggered it:
+
+| Prefix | Meaning |
+|---|---|
+| `input-end:` | input_active just dropped — the signal rusrp was receiving ended |
+| `output-end:` | output_active just released — rusrp finished keying the output |
+
+Each event type only shows the levels relevant to that stream:
+
+```
+input-end:  in=-12.3pk/-18.0rms dBFS input_active=0 output_active=0 jitter=42.0ms late=0 wd_events=0 overruns=0 underruns=0
+output-end: out=-14.1pk/-20.3rms dBFS input_active=0 output_active=0 jitter=42.0ms late=0 wd_events=0 overruns=0 underruns=0
+```
+
+| Field | Meaning |
+|---|---|
+| `in=Xpk/Yrms dBFS` | Peak and RMS level of the signal rusrp received, accumulated over that transmission (`input-end` only) |
+| `out=Xpk/Yrms dBFS` | Peak and RMS level rusrp sent to the output, accumulated over that transmission (`output-end` only) |
+| `input_active=0/1` | Whether input was active at the moment of logging |
+| `output_active=0/1` | Whether output was active at the moment of logging |
+| `jitter=X ms` | Jitter buffer fill estimate at log time |
+| `late=N` | USRP packets that arrived after their playout deadline (network glitches) |
+| `wd_events=N` | Times the watchdog forced an unkey due to network timeout |
+| `overruns=N` | ALSA capture buffer overruns |
+| `underruns=N` | ALSA playback buffer underruns |
+
+When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels and confirms the daemon is alive; levels between transmissions will read near −96 dBFS (silence).
+
+### Watchdog messages
+
+These appear at DEBUG level during normal operation:
+
+| Message | Meaning |
+|---|---|
+| `watchdog: keyed, PTT in N ms` | Input went active; output will assert after the jitter buffer fills (N = `jitter_buffer_ms`) |
+| `watchdog: PTT asserted` | Output is now active |
+| `watchdog: unkeyed, holding output N ms for buffer drain` | Input dropped; output held briefly while buffered audio plays out |
+
+This appears at WARNING level and indicates something went wrong:
+
+| Message | Meaning |
+|---|---|
+| `watchdog: forcing unkey: network timeout` | No USRP packets for `network_timeout_ms` ms; output forcibly released |
+| `watchdog: forcing unkey: daemon stopping` | Clean shutdown; output released before exit |
+
+### Error messages
+
+| Message | Meaning |
+|---|---|
+| `config: cannot open /path/rusrp.toml` | Config file not found — check the path |
+| `config: parse error in /path: ...` | TOML syntax error; the detail string identifies the line |
+| `config: usrp.remote_host is required` | `remote_host` missing from `[usrp]` section |
+| `config: usrp ports must be 1–65535` | Invalid `remote_port` or `local_port` |
+| `config: gain_db must be in range -12 to +12` | `input_gain_db` or `output_gain_db` out of range |
+| `config: jitter_buffer_ms = N is invalid; must be 40–250 ms` | Value out of range; minimum is 40 |
+| `config: logic.hid_device is required` | `hid_device` missing from `[logic]` section |
+| `alsa: open plughw:X,Y (capture/playback): ...` | ALSA device not found or already in use — verify with `aplay -l` |
+| `logic: open /dev/hidrawN: ...` | HID device not found — check udev rule, permissions, and that the device is plugged in |
+| `logic: HID write failed` | Lost communication with CM119A during operation |
+| `usrp: bind :N: ...` | UDP port in use or permission denied |
+| `usrp: cannot resolve host` | Remote host unreachable at startup |
 
 ## License
 

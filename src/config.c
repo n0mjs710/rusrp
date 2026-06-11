@@ -23,7 +23,7 @@ void config_defaults(config_t *cfg)
 
     strncpy(cfg->logic.hid_device, "/dev/hidraw0", sizeof(cfg->logic.hid_device) - 1);
     cfg->logic.output_active_gpio = 3;
-    cfg->logic.input_active_low   = false;
+    cfg->logic.input_active_low   = true;
     cfg->logic.output_active_low  = true;
 
     cfg->network.jitter_buffer_ms = 100;
@@ -91,23 +91,30 @@ static int validate(const config_t *cfg)
     int ok = 1;
 
     if (cfg->usrp.remote_host[0] == '\0') {
+        fprintf(stderr, "config: usrp.remote_host is required\n");
         sd_journal_print(LOG_ERR, "config: usrp.remote_host is required");
         ok = 0;
     }
     if (cfg->usrp.remote_port == 0 || cfg->usrp.local_port == 0) {
+        fprintf(stderr, "config: usrp ports must be 1–65535\n");
         sd_journal_print(LOG_ERR, "config: usrp ports must be 1–65535");
         ok = 0;
     }
     if (cfg->audio.input_gain_db < -12.0f || cfg->audio.input_gain_db > 12.0f ||
         cfg->audio.output_gain_db < -12.0f || cfg->audio.output_gain_db > 12.0f) {
+        fprintf(stderr, "config: gain_db must be in range -12 to +12\n");
         sd_journal_print(LOG_ERR, "config: gain_db must be in range -12 to +12");
         ok = 0;
     }
     if (cfg->network.jitter_buffer_ms < 40 || cfg->network.jitter_buffer_ms > 250) {
-        sd_journal_print(LOG_ERR, "config: jitter_buffer_ms must be 40–250");
+        fprintf(stderr, "config: jitter_buffer_ms = %u is invalid; must be 40–250 ms\n",
+                cfg->network.jitter_buffer_ms);
+        sd_journal_print(LOG_ERR, "config: jitter_buffer_ms = %u is invalid; must be 40–250 ms",
+                         cfg->network.jitter_buffer_ms);
         ok = 0;
     }
     if (cfg->logic.hid_device[0] == '\0') {
+        fprintf(stderr, "config: logic.hid_device is required\n");
         sd_journal_print(LOG_ERR, "config: logic.hid_device is required");
         ok = 0;
     }

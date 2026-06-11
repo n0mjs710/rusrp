@@ -147,14 +147,16 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
                              wd->cfg->network.jitter_buffer_ms);
     } else if (!keyed && prev) {
         /* UNKEY: cancel pending PTT, flush buffers to prevent stale audio
-         * bleeding into the next transmission, then start tail timer. */
+         * bleeding into the next transmission, then hold output while the
+         * audio buffer drains. */
         atomic_store(&wd->ptt_ready_ts, 0);
         jitter_buffer_flush(wd->jb);
         if (wd->alsa)
             audio_alsa_request_drain(wd->alsa);
         atomic_store(&wd->key_end_ts, monotonic_ms());
         if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "watchdog: unkeyed, starting tail timer");
+            sd_journal_print(LOG_DEBUG, "watchdog: unkeyed, holding output %u ms for buffer drain",
+                             wd->cfg->watchdog.output_active_tail_ms);
     }
 }
 

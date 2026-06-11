@@ -32,7 +32,7 @@ struct logic_hid {
 
 static int hid_write_gpio(logic_hid_t *l, bool active)
 {
-    bool pin_high = active ^ l->output_active_low;
+    bool pin_high = (active == l->output_active_low);
     /* hidraw requires report ID as byte 0 even for devices without numbered
      * reports; data begins at byte 1. Total 5 bytes for the 4-byte CM119A report. */
     uint8_t report[5] = {
@@ -66,7 +66,7 @@ static void *poll_thread_fn(void *arg)
         if (n < 1) continue;
 
         bool raw = (buf[0] & VOLDN_BIT) != 0;
-        bool active = raw ^ l->input_active_low;
+        bool active = (raw == l->input_active_low);
         atomic_store_explicit(&l->input_active, active, memory_order_relaxed);
     }
     return NULL;
