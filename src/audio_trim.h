@@ -11,11 +11,12 @@
  * signal is NOT delayed — it asserts immediately so the channel is captured
  * and any CTCSS decoder on the far end has time to open before voice arrives.
  *
- * Trailing trim: audio is delayed by trailing_frames through a FIFO.  When
- * the transmission falling edge is detected the FIFO is drained (its content
- * is the clean audio from just before the edge) and then the path goes idle.
- * The last trailing_frames worth of newly-captured audio — which may contain
- * squelch-tail noise or other artifacts — are never sent downstream.
+ * Trailing trim: audio is time-shifted through a FIFO of depth trailing_frames.
+ * This adds trailing_frames * 20 ms of latency to every transmission, but when
+ * audio_trim_tx_end() is called the FIFO is discarded immediately — the last
+ * trailing_frames of audio never reach downstream.  On the input path this
+ * removes squelch-tail noise before it reaches the network; on the output path
+ * it stops ALSA output the moment PTT releases.
  *
  * Both values are expressed in 20 ms frames (one USRP frame).  Pass 0 for
  * either to disable that function; the module then adds no latency.
@@ -35,26 +36,19 @@ void audio_trim_destroy(audio_trim_t *t);
 /* Call on transmission rising edge.  Resets state; safe to call repeatedly. */
 void audio_trim_tx_start(audio_trim_t *t);
 
-/*
- * Call on transmission falling edge.  If trailing_frames > 0 the module
- * enters drain mode: subsequent calls to audio_trim_process will emit the
- * buffered pre-edge frames before returning false.  If trailing_frames == 0
- * the module goes idle immediately.
- */
+/* Call on transmission falling edge.  The FIFO is discarded immediately and
+ * the module goes idle.  The caller should stop sending downstream on the
+ * same frame (write silence / stop sending USRP frames). */
 void audio_trim_tx_end(audio_trim_t *t);
 
 /*
  * Process one 20 ms frame.
  *
- *   in  — real captured audio (ignored while draining; may be NULL then)
+ *   in  — real captured audio (must be valid while TRIM_ACTIVE)
  *   out — frame to send downstream
  *
  * Returns true if out contains a frame that should be forwarded.
  * Returns false when the module is idle or the trailing FIFO is still filling.
- *
- * Callers should send UNKEY / deassert output_active on the first call that
- * returns false after audio_trim_tx_end() was called (i.e. the falling edge
- * of audio_trim_active()).
  */
 bool audio_trim_process(audio_trim_t *t, const int16_t *in, int16_t *out);
 

@@ -117,7 +117,7 @@ The four `*_trim_ms` settings clean up the edges of transmissions:
 
 For the output path, `output_leading_trim_ms` serves a specific purpose when CTCSS is in use: the output_active signal to your radio asserts immediately, but voice audio is held back for N ms, giving the CTCSS decoder in the downstream radio time to open the squelch before voice arrives. Approximately 100 ms is a typical value.
 
-**Trailing trim** removes the last N milliseconds of audio before a transmission falls. Because you cannot predict the future, this works by running the audio through a FIFO delay: audio is time-shifted by N ms, and when the end of the transmission is detected, the buffered pre-edge audio is forwarded and then the path stops. The last N ms of real-time audio — which may contain squelch tail noise or click artifacts — is discarded.
+**Trailing trim** removes the last N milliseconds of audio before a transmission falls. Audio is time-shifted through a FIFO of depth N ms so that the output is always N ms behind the input. When the end of the transmission is detected, the FIFO is discarded immediately — the last N ms of captured audio, which may contain squelch-tail noise or a PTT-release click, never reaches downstream.
 
 This is the digital equivalent of the analog audio delay board used in FM repeaters for squelch-tail elimination. The cost is N ms of latency added to every transmission; start with values in the 40–100 ms range and adjust by ear.
 
