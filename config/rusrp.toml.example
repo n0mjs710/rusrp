@@ -26,8 +26,8 @@ output_trailing_trim_ms = 0
 [logic]
 hid_device         = "/dev/hidraw0"
 output_active_gpio = 3          # CM119A GPIO3 (pin 13) — PTT
-input_active_low   = true        # input signal is active when pulled low
-output_active_low  = true        # output signal is active-low (open-collector driver)
+input_active_low   = true       # input signal is active when pulled low
+output_active_low  = true       # output signal is active-low (open-collector driver)
 
 [network]
 jitter_buffer_ms = 60           # 40–250 ms (rounds up to nearest 20 ms frame)
