@@ -160,9 +160,9 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
     }
 }
 
-uint64_t watchdog_event_count(const watchdog_t *wd)
+uint64_t watchdog_timeout_count(watchdog_t *wd)
 {
-    return atomic_load(&wd->event_count);
+    return atomic_exchange(&wd->event_count, 0);
 }
 
 void watchdog_destroy(watchdog_t *wd)

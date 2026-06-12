@@ -145,36 +145,37 @@ static void *playback_thread_fn(void *arg)
 {
     pb_ctx_t *ctx = arg;
     int16_t   jb_frame[USRP_AUDIO_FRAMES];
+    int16_t   trimmed[USRP_AUDIO_FRAMES];
     int16_t   work[USRP_AUDIO_FRAMES];
     static const int16_t silence[USRP_AUDIO_FRAMES];
     bool prev_output_active = false;
 
     while (!atomic_load_explicit(ctx->stop, memory_order_relaxed)) {
-        jitter_buffer_pull(ctx->jb, jb_frame);
-
-        /* Detect output_active transitions to drive the trim module. */
         bool output_active = logic_hid_output_active(ctx->logic);
+
+        /* Detect transitions to drive the trim module. */
         if (output_active && !prev_output_active)
             audio_trim_tx_start(ctx->out_trim);
         else if (!output_active && prev_output_active)
             audio_trim_tx_end(ctx->out_trim);
         prev_output_active = output_active;
 
-        /* Route jitter buffer output through the trim module.
-         * Leading window outputs silence; trailing drain emits buffered frames.
-         * When idle (between transmissions) write silence to keep ALSA flowing. */
-        int16_t trimmed[USRP_AUDIO_FRAMES];
-        const int16_t *to_write;
-        if (audio_trim_process(ctx->out_trim, jb_frame, trimmed)) {
-            memcpy(work, trimmed, sizeof(work));
-            uint64_t delta = 0;
-            audio_proc_run(ctx->out_proc, work, USRP_AUDIO_FRAMES, &delta);
-            if (delta)
-                atomic_fetch_add_explicit(&ctx->clip_count, delta,
-                                          memory_order_relaxed);
-            to_write = work;
-        } else {
-            to_write = silence;
+        /* Only pull from the jitter buffer while output is active.  During
+         * idle we write silence directly — the jitter buffer cursor is reset
+         * by flush() on each new KEY anyway, so advancing it during idle
+         * serves no purpose and would inflate the silence injection counter. */
+        const int16_t *to_write = silence;
+        if (output_active) {
+            jitter_buffer_pull(ctx->jb, jb_frame);
+            if (audio_trim_process(ctx->out_trim, jb_frame, trimmed)) {
+                memcpy(work, trimmed, sizeof(work));
+                uint64_t delta = 0;
+                audio_proc_run(ctx->out_proc, work, USRP_AUDIO_FRAMES, &delta);
+                if (delta)
+                    atomic_fetch_add_explicit(&ctx->clip_count, delta,
+                                              memory_order_relaxed);
+                to_write = work;
+            }
         }
 
         audio_alsa_write(ctx->alsa, to_write, USRP_AUDIO_FRAMES);

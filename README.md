@@ -202,7 +202,7 @@ Each event type shows only the fields relevant to that path:
 
 ```
 input-end:  in=-12.3pk/-18.0rms dBFS overruns=0
-output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 wd_events=0 underruns=0
+output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 network_timeouts=0 underruns=0
 ```
 
 **`input-end` fields:**
@@ -220,7 +220,7 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 wd_events=0
 | `jitter=X ms` | Estimated network jitter at log time |
 | `late=N` | USRP packets dropped on arrival (arrived behind the playout cursor or outside the jitter buffer window) |
 | `silence=N` | Playout slots where no frame was available — silence injected; high values with low `late` indicate packet loss before the frame reached us |
-| `wd_events=N` | Times the watchdog forced output_active release due to network timeout |
+| `network_timeouts=N` | Times the watchdog forced output_active release because no USRP traffic arrived within `network_timeout_ms` |
 | `underruns=N` | ALSA playback buffer underruns |
 
 When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels, `input_active=` and `output_active=` flags, and all stats from both paths — useful to confirm the daemon is alive between transmissions.

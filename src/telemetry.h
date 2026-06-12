@@ -18,5 +18,5 @@ void telemetry_log(telemetry_t *tel,
                    audio_proc_t          *out_proc,
                    const logic_hid_t     *logic,
                    jitter_buffer_t       *jb,
-                   const watchdog_t      *wd);
+                   watchdog_t            *wd);
 void telemetry_destroy(telemetry_t *tel);
