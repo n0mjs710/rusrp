@@ -16,6 +16,10 @@ typedef struct {
     float output_gain_db;
     bool  input_highpass;
     bool  output_highpass;
+    unsigned int input_leading_trim_ms;   /* silence start of input tx; 0–260, rounded to 20 ms */
+    unsigned int input_trailing_trim_ms;  /* trim end of input tx via delay; 0–260, rounded to 20 ms */
+    unsigned int output_leading_trim_ms;  /* silence start of output tx; 0–260, rounded to 20 ms */
+    unsigned int output_trailing_trim_ms; /* trim end of output tx via delay; 0–260, rounded to 20 ms */
 } config_audio_t;
 
 typedef struct {

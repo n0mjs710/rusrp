@@ -3,6 +3,7 @@
 #include "usrp_transport.h"
 #include "audio_alsa.h"
 #include "audio_processing.h"
+#include "audio_trim.h"
 #include "logic_hid.h"
 #include "jitter_buffer.h"
 #include "telemetry.h"
@@ -35,6 +36,7 @@ typedef struct {
     const config_t          *cfg;
     usrp_transport_t        *transport;
     audio_proc_t            *in_proc;
+    audio_trim_t            *in_trim;
     logic_hid_t             *logic;
     atomic_uint_fast32_t     tx_seq;
     atomic_bool              prev_keyed;
@@ -57,28 +59,48 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
     bool keyed     = logic_hid_input_active(ctx->logic);
     bool was_keyed = atomic_exchange_explicit(&ctx->prev_keyed, keyed,
                                               memory_order_relaxed);
-    uint8_t pkt[USRP_PKT_LEN];
+    uint8_t  pkt[USRP_PKT_LEN];
     uint32_t seq;
 
+    /* Rising edge: assert KEY immediately (channel capture), start trim. */
     if (keyed && !was_keyed) {
-        /* Rising edge: send explicit KEY frame before the first voice frame. */
         if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "input: active");
+        audio_trim_tx_start(ctx->in_trim);
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 1);
         usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
     }
 
-    if (keyed) {
-        seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
-                                                   memory_order_relaxed);
-        usrp_build_voice(pkt, seq, 1, frame);
-        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
-    } else if (!keyed && was_keyed) {
-        /* Falling edge: send explicit UNKEY frame. */
+    /* Falling edge: log, begin trailing drain (UNKEY sent after drain). */
+    if (!keyed && was_keyed) {
         if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "input: ended");
+        audio_trim_tx_end(ctx->in_trim);
+    }
+
+    /* Remember whether trim was active before processing this frame so we
+     * can detect the drain-complete falling edge below. */
+    bool trim_was_active = audio_trim_active(ctx->in_trim);
+
+    /* Route audio through the trim module.
+     * During leading window: outputs silence.
+     * During trailing drain: outputs buffered pre-edge frames (in ignored).
+     * Returns false while the FIFO is filling or the module is idle. */
+    int16_t trimmed[USRP_AUDIO_FRAMES];
+    bool has_frame = audio_trim_process(ctx->in_trim,
+                                        keyed ? frame : NULL,
+                                        trimmed);
+    if (has_frame) {
+        seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
+                                                   memory_order_relaxed);
+        usrp_build_voice(pkt, seq, 1, trimmed);
+        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+    }
+
+    /* Drain complete: send UNKEY on the falling edge of trim_active. */
+    if (trim_was_active && !audio_trim_active(ctx->in_trim)) {
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 0);
@@ -109,7 +131,9 @@ static void on_usrp_packet(const usrp_packet_t *pkt, void *userdata)
 typedef struct {
     audio_alsa_t         *alsa;
     audio_proc_t         *out_proc;
+    audio_trim_t         *out_trim;
     jitter_buffer_t      *jb;
+    const logic_hid_t    *logic;
     atomic_bool          *stop;
     atomic_uint_fast64_t  clip_count;
 } pb_ctx_t;
@@ -120,17 +144,40 @@ typedef struct {
 static void *playback_thread_fn(void *arg)
 {
     pb_ctx_t *ctx = arg;
-    int16_t   frame[USRP_AUDIO_FRAMES];
+    int16_t   jb_frame[USRP_AUDIO_FRAMES];
+    int16_t   work[USRP_AUDIO_FRAMES];
+    static const int16_t silence[USRP_AUDIO_FRAMES];
+    bool prev_output_active = false;
 
     while (!atomic_load_explicit(ctx->stop, memory_order_relaxed)) {
-        jitter_buffer_pull(ctx->jb, frame);
+        jitter_buffer_pull(ctx->jb, jb_frame);
 
-        uint64_t delta = 0;
-        audio_proc_run(ctx->out_proc, frame, USRP_AUDIO_FRAMES, &delta);
-        if (delta)
-            atomic_fetch_add_explicit(&ctx->clip_count, delta, memory_order_relaxed);
+        /* Detect output_active transitions to drive the trim module. */
+        bool output_active = logic_hid_output_active(ctx->logic);
+        if (output_active && !prev_output_active)
+            audio_trim_tx_start(ctx->out_trim);
+        else if (!output_active && prev_output_active)
+            audio_trim_tx_end(ctx->out_trim);
+        prev_output_active = output_active;
 
-        audio_alsa_write(ctx->alsa, frame, USRP_AUDIO_FRAMES);
+        /* Route jitter buffer output through the trim module.
+         * Leading window outputs silence; trailing drain emits buffered frames.
+         * When idle (between transmissions) write silence to keep ALSA flowing. */
+        int16_t trimmed[USRP_AUDIO_FRAMES];
+        const int16_t *to_write;
+        if (audio_trim_process(ctx->out_trim, jb_frame, trimmed)) {
+            memcpy(work, trimmed, sizeof(work));
+            uint64_t delta = 0;
+            audio_proc_run(ctx->out_proc, work, USRP_AUDIO_FRAMES, &delta);
+            if (delta)
+                atomic_fetch_add_explicit(&ctx->clip_count, delta,
+                                          memory_order_relaxed);
+            to_write = work;
+        } else {
+            to_write = silence;
+        }
+
+        audio_alsa_write(ctx->alsa, to_write, USRP_AUDIO_FRAMES);
     }
     return NULL;
 }
@@ -178,6 +225,8 @@ int main(int argc, char *argv[])
     audio_proc_t     *out_proc  = NULL;
     audio_alsa_t     *alsa      = NULL;
     telemetry_t      *tel       = NULL;
+    audio_trim_t     *in_trim   = NULL;
+    audio_trim_t     *out_trim  = NULL;
     pthread_t         pb_thread;
     bool              pb_started = false;
 
@@ -199,6 +248,14 @@ int main(int argc, char *argv[])
                           cfg.audio.output_highpass,
                           cfg.audio.output_gain_db) != 0) goto fail;
 
+    /* ── init: audio trim ── */
+    if (audio_trim_create(&in_trim,
+                          cfg.audio.input_leading_trim_ms  / 20,
+                          cfg.audio.input_trailing_trim_ms / 20) != 0) goto fail;
+    if (audio_trim_create(&out_trim,
+                          cfg.audio.output_leading_trim_ms  / 20,
+                          cfg.audio.output_trailing_trim_ms / 20) != 0) goto fail;
+
     /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};
     atomic_init(&tx_ctx.tx_seq,     0);
@@ -207,6 +264,7 @@ int main(int argc, char *argv[])
     tx_ctx.cfg       = &cfg;
     tx_ctx.transport = transport;
     tx_ctx.in_proc   = in_proc;
+    tx_ctx.in_trim   = in_trim;
     tx_ctx.logic     = logic;
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
@@ -218,7 +276,9 @@ int main(int argc, char *argv[])
     atomic_init(&pb_ctx.clip_count, 0);
     pb_ctx.alsa     = alsa;
     pb_ctx.out_proc = out_proc;
+    pb_ctx.out_trim = out_trim;
     pb_ctx.jb       = jb;
+    pb_ctx.logic    = logic;
     pb_ctx.stop     = &g_stop;
 
     if (pthread_create(&pb_thread, NULL, playback_thread_fn, &pb_ctx) != 0) {
@@ -253,6 +313,8 @@ int main(int argc, char *argv[])
     telemetry_destroy(tel);
     if (pb_started)   pthread_join(pb_thread, NULL);
     audio_alsa_destroy(alsa);
+    audio_trim_destroy(out_trim);
+    audio_trim_destroy(in_trim);
     audio_proc_destroy(out_proc);
     audio_proc_destroy(in_proc);
     usrp_transport_destroy(transport);
@@ -269,6 +331,8 @@ fail:
     atomic_store(&g_stop, true);
     if (pb_started)   pthread_join(pb_thread, NULL);
     audio_alsa_destroy(alsa);
+    audio_trim_destroy(out_trim);
+    audio_trim_destroy(in_trim);
     audio_proc_destroy(out_proc);
     audio_proc_destroy(in_proc);
     usrp_transport_destroy(transport);

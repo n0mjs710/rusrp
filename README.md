@@ -26,9 +26,13 @@ Analog device                            AllStarLink server
         │            │                           │
         │        250 Hz HPF  (input_highpass)    │
         │            │                           │
+        │        edge trim   (input_*_trim_ms)   │
+        │            │                           │
         │           USRP ───────────────► ASL3 chan_usrp
         │                                        │
    audio in ◄── ALSA playback             USRP ◄─┘
+        │            ▲
+        │        edge trim   (output_*_trim_ms)
         │            ▲
         │        250 Hz HPF  (output_highpass)
         │            ▲
@@ -92,6 +96,10 @@ Key settings:
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
 | `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS tones from the analog side) |
 | `[audio]` | `output_highpass` | Enable 250 Hz HPF on playback audio (blocks CTCSS/DCS tones from the network side) |
+| `[audio]` | `input_leading_trim_ms` | Silence the first N ms of captured audio after input_active rises (0–260, rounds to 20 ms). Removes mic click. |
+| `[audio]` | `input_trailing_trim_ms` | Drop the last N ms of captured audio before input_active falls (0–260, rounds to 20 ms). Removes squelch-tail noise. |
+| `[audio]` | `output_leading_trim_ms` | Silence the first N ms of output audio after output_active rises (0–260, rounds to 20 ms). Gives CTCSS decoders time to open (~100 ms). |
+| `[audio]` | `output_trailing_trim_ms` | Drop the last N ms of output audio before output_active falls (0–260, rounds to 20 ms). Removes PTT-drop burst. |
 | `[logic]` | `hid_device` | hidraw device (e.g. `/dev/hidraw0`) |
 | `[logic]` | `output_active_gpio` | GPIO number for PTT (default 3) |
 | `[logic]` | `input_active_low` | `true` if the input signal is active when the line is pulled low (most hardware) |
@@ -100,6 +108,20 @@ Key settings:
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 
 See `config/rusrp.toml.example` for all options with comments.
+
+### Audio edge trimming
+
+The four `*_trim_ms` settings clean up the edges of transmissions:
+
+**Leading trim** silences the first N milliseconds of audio after a transmission begins. The channel is captured immediately — the KEY frame is sent to the network and output_active asserts on the hardware without delay — only the audio content is muted. This removes mic clicks and PTT-thump artifacts from the beginning of a transmission.
+
+For the output path, `output_leading_trim_ms` serves a specific purpose when CTCSS is in use: the output_active signal to your radio asserts immediately, but voice audio is held back for N ms, giving the CTCSS decoder in the downstream radio time to open the squelch before voice arrives. Approximately 100 ms is a typical value.
+
+**Trailing trim** removes the last N milliseconds of audio before a transmission falls. Because you cannot predict the future, this works by running the audio through a FIFO delay: audio is time-shifted by N ms, and when the end of the transmission is detected, the buffered pre-edge audio is forwarded and then the path stops. The last N ms of real-time audio — which may contain squelch tail noise or click artifacts — is discarded.
+
+This is the digital equivalent of the analog audio delay board used in FM repeaters for squelch-tail elimination. The cost is N ms of latency added to every transmission; start with values in the 40–100 ms range and adjust by ear.
+
+All trim values are in milliseconds and are rounded to the nearest 20 ms frame (the USRP frame size). The valid range is 0–260 ms; 0 disables the function with no latency penalty.
 
 ## Running
 

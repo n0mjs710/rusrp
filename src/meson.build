@@ -5,6 +5,7 @@ sources = files(
   'usrp_transport.c',
   'audio_alsa.c',
   'audio_processing.c',
+  'audio_trim.c',
   'logic_hid.c',
   'jitter_buffer.c',
   'telemetry.c',

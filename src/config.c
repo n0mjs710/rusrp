@@ -20,6 +20,10 @@ void config_defaults(config_t *cfg)
     cfg->audio.output_gain_db   = 0.0f;
     cfg->audio.input_highpass   = false;
     cfg->audio.output_highpass  = false;
+    cfg->audio.input_leading_trim_ms   = 0;
+    cfg->audio.input_trailing_trim_ms  = 0;
+    cfg->audio.output_leading_trim_ms  = 0;
+    cfg->audio.output_trailing_trim_ms = 0;
 
     strncpy(cfg->logic.hid_device, "/dev/hidraw0", sizeof(cfg->logic.hid_device) - 1);
     cfg->logic.output_active_gpio = 3;
@@ -82,6 +86,22 @@ static void read_bool(toml_table_t *tbl, const char *key, bool *dst)
     toml_datum_t d = toml_bool_in(tbl, key);
     if (d.ok)
         *dst = (bool)d.u.b;
+}
+
+/* Round ms to the nearest 20 ms frame boundary and clamp to 0–260 ms.
+ * Logs a warning if the value was changed so the user knows what was applied. */
+static unsigned int round_trim_ms(unsigned int ms, const char *name)
+{
+    unsigned int rounded = ((ms + 10u) / 20u) * 20u;
+    if (rounded > 260u) rounded = 260u;
+    if (rounded != ms) {
+        fprintf(stderr, "config: %s = %u rounded to %u ms (nearest 20 ms frame)\n",
+                name, ms, rounded);
+        sd_journal_print(LOG_WARNING,
+                         "config: %s = %u rounded to %u ms (nearest 20 ms frame)",
+                         name, ms, rounded);
+    }
+    return rounded;
 }
 
 /* ── validation ───────────────────────────────────────────────────────────── */
@@ -161,7 +181,21 @@ int config_load(config_t *cfg, const char *path)
         read_float(t, "output_gain_db",  &cfg->audio.output_gain_db);
         read_bool(t,  "input_highpass",  &cfg->audio.input_highpass);
         read_bool(t,  "output_highpass", &cfg->audio.output_highpass);
+        read_uint(t,  "input_leading_trim_ms",   &cfg->audio.input_leading_trim_ms);
+        read_uint(t,  "input_trailing_trim_ms",  &cfg->audio.input_trailing_trim_ms);
+        read_uint(t,  "output_leading_trim_ms",  &cfg->audio.output_leading_trim_ms);
+        read_uint(t,  "output_trailing_trim_ms", &cfg->audio.output_trailing_trim_ms);
     }
+
+    /* Round trim values to 20 ms frame boundaries. */
+    cfg->audio.input_leading_trim_ms   = round_trim_ms(cfg->audio.input_leading_trim_ms,
+                                                        "audio.input_leading_trim_ms");
+    cfg->audio.input_trailing_trim_ms  = round_trim_ms(cfg->audio.input_trailing_trim_ms,
+                                                        "audio.input_trailing_trim_ms");
+    cfg->audio.output_leading_trim_ms  = round_trim_ms(cfg->audio.output_leading_trim_ms,
+                                                        "audio.output_leading_trim_ms");
+    cfg->audio.output_trailing_trim_ms = round_trim_ms(cfg->audio.output_trailing_trim_ms,
+                                                        "audio.output_trailing_trim_ms");
 
     if ((t = toml_table_in(root, "logic"))) {
         read_str(t,  "hid_device",         cfg->logic.hid_device,
