@@ -56,7 +56,7 @@ without byte-swapping (matching the behavior of ASL3 on standard x86/ARM hardwar
 | `talker` | Identifies the source; useful in hub scenarios; set to 0 for basic use |
 | `type` | Payload type — in practice only `VOICE (0)` matters for audio; see below |
 | `mpxid` | Multiplex ID for multi-channel use; set to 0 for basic use |
-| `reserved` | Always 0 |
+| `reserved` | Always 0 in standard use; available as an extension point (e.g. a 32-bit network token on PING frames for non-ASL hub authentication) |
 
 ---
 
