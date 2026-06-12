@@ -134,6 +134,11 @@ uint64_t jitter_buffer_silence_count(jitter_buffer_t *jb)
     return atomic_exchange(&jb->silence_count, 0);
 }
 
+void jitter_buffer_reset_silence_count(jitter_buffer_t *jb)
+{
+    atomic_store(&jb->silence_count, 0);
+}
+
 void jitter_buffer_destroy(jitter_buffer_t *jb)
 {
     if (!jb) return;

@@ -32,4 +32,8 @@ uint64_t jitter_buffer_late_count(jitter_buffer_t *jb);
 /* Number of playout slots where no frame was available (silence injected) since last call (resets counter). */
 uint64_t jitter_buffer_silence_count(jitter_buffer_t *jb);
 
+/* Reset the silence counter — call at the start of each transmission so the
+ * output-end log reflects only the current transmission's missed frames. */
+void jitter_buffer_reset_silence_count(jitter_buffer_t *jb);
+
 void jitter_buffer_destroy(jitter_buffer_t *jb);

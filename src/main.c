@@ -154,19 +154,23 @@ static void *playback_thread_fn(void *arg)
         bool output_active = logic_hid_output_active(ctx->logic);
 
         /* Detect transitions to drive the trim module. */
-        if (output_active && !prev_output_active)
+        if (output_active && !prev_output_active) {
             audio_trim_tx_start(ctx->out_trim);
-        else if (!output_active && prev_output_active)
+            /* Reset per-transmission silence counter so output-end reflects
+             * only missed frames from this transmission, not idle accumulation. */
+            jitter_buffer_reset_silence_count(ctx->jb);
+        } else if (!output_active && prev_output_active) {
             audio_trim_tx_end(ctx->out_trim);
+        }
         prev_output_active = output_active;
 
-        /* Only pull from the jitter buffer while output is active.  During
-         * idle we write silence directly — the jitter buffer cursor is reset
-         * by flush() on each new KEY anyway, so advancing it during idle
-         * serves no purpose and would inflate the silence injection counter. */
+        /* Always pull from the jitter buffer to keep the playout window
+         * advancing.  If the cursor stalls while the network keeps pushing,
+         * incoming frames overflow the depth window and are dropped as late. */
+        (void)jitter_buffer_pull(ctx->jb, jb_frame);
+
         const int16_t *to_write = silence;
         if (output_active) {
-            jitter_buffer_pull(ctx->jb, jb_frame);
             if (audio_trim_process(ctx->out_trim, jb_frame, trimmed)) {
                 memcpy(work, trimmed, sizeof(work));
                 uint64_t delta = 0;
