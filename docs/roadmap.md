@@ -107,6 +107,3 @@ network_token = 0xA5A5A5A5   # same value on all endpoints and the hub
   to use raw PCM at the boundary.  This is deferred until the basic hub is working
   and tested.
 
-- **Translating Python projects to Rust:** separately from rusrp-hub, the intention
-  is to set up a Rust development environment and translate existing Python tools
-  (starting with `ipsc2hbp`) once the Rust workflow is established.
