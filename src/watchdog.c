@@ -28,7 +28,7 @@ static void force_unkey(watchdog_t *wd, const char *reason)
     bool was_keyed = atomic_exchange(&wd->keyed, false);
     atomic_store(&wd->ptt_ready_ts, 0);   /* cancel any pending deferred PTT */
     if (was_keyed) {
-        sd_journal_print(LOG_WARNING, "watchdog: forcing unkey: %s", reason);
+        sd_journal_print(LOG_WARNING, "output: forced release: %s", reason);
         logic_hid_set_output(wd->logic, false);
         jitter_buffer_flush(wd->jb);
         atomic_fetch_add(&wd->event_count, 1);
@@ -61,7 +61,7 @@ static void *watchdog_thread_fn(void *arg)
             atomic_store(&wd->ptt_ready_ts, 0);
             logic_hid_set_output(wd->logic, true);
             if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-                sd_journal_print(LOG_DEBUG, "watchdog: output asserted");
+                sd_journal_print(LOG_DEBUG, "output: asserted");
         }
 
         /* Network timeout: no USRP traffic in network_timeout_ms. */
@@ -143,7 +143,7 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
         uint64_t fire = monotonic_ms() + wd->cfg->network.jitter_buffer_ms;
         atomic_store(&wd->ptt_ready_ts, fire);
         if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "watchdog: output pending %u ms",
+            sd_journal_print(LOG_DEBUG, "output: pending %u ms",
                              wd->cfg->network.jitter_buffer_ms);
     } else if (!keyed && prev) {
         /* UNKEY: cancel pending output, flush buffers to prevent stale audio
@@ -155,7 +155,7 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
             audio_alsa_request_drain(wd->alsa);
         atomic_store(&wd->key_end_ts, monotonic_ms());
         if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "watchdog: holding output %u ms for buffer drain",
+            sd_journal_print(LOG_DEBUG, "output: holding %u ms for buffer drain",
                              wd->cfg->watchdog.output_active_tail_ms);
     }
 }

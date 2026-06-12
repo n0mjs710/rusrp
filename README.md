@@ -199,29 +199,29 @@ When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_se
 
 ### Debug messages
 
-These appear at DEBUG level during normal operation. Input and output events come from separate code paths and are logged independently.
+These appear at DEBUG level during normal operation. Input and output events are logged independently from their respective code paths.
 
-Input events (analog COS line, logged from the capture path):
+Input events:
 
 | Message | Meaning |
 |---|---|
 | `input: active` | Input signal went active |
 | `input: ended` | Input signal dropped |
 
-Output events (network-driven PTT, logged from the watchdog):
+Output events:
 
 | Message | Meaning |
 |---|---|
-| `watchdog: output pending N ms` | Output will assert after the jitter buffer fills (N = `jitter_buffer_ms`) |
-| `watchdog: output asserted` | Output is now active |
-| `watchdog: holding output N ms for buffer drain` | Output held briefly while buffered audio plays out |
+| `output: pending N ms` | Output will assert after the jitter buffer fills (N = `jitter_buffer_ms`) |
+| `output: asserted` | Output is now active |
+| `output: holding N ms for buffer drain` | Output held briefly while buffered audio plays out |
 
 This appears at WARNING level and indicates something went wrong:
 
 | Message | Meaning |
 |---|---|
-| `watchdog: forcing unkey: network timeout` | No USRP packets for `network_timeout_ms` ms; output forcibly released |
-| `watchdog: forcing unkey: daemon stopping` | Clean shutdown; output released before exit |
+| `output: forced release: network timeout` | No USRP packets for `network_timeout_ms` ms; output forcibly released |
+| `output: forced release: stopping` | Clean shutdown; output released before exit |
 
 ### Error messages
 
