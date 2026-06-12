@@ -22,6 +22,7 @@ struct jitter_buffer {
     uint32_t         playout_seq;   /* next seq to deliver */
     bool             seeded;        /* true after first push */
     atomic_uint_least64_t late_count;
+    atomic_uint_least64_t silence_count;
     /* jitter estimation */
     uint64_t         last_push_ts;
     float            jitter_ms;
@@ -39,6 +40,7 @@ int jitter_buffer_create(jitter_buffer_t **jb, unsigned int depth_ms)
     self->depth_frames = (depth_ms + 19u) / 20u;
     if (self->depth_frames > MAX_SLOTS) self->depth_frames = MAX_SLOTS;
     atomic_init(&self->late_count, 0);
+    atomic_init(&self->silence_count, 0);
     *jb = self;
     return 0;
 }
@@ -100,7 +102,8 @@ bool jitter_buffer_pull(jitter_buffer_t *jb, int16_t *samples_out)
         jb->slots[idx].valid = false;
         real = true;
     } else {
-        memset(samples_out, 0, USRP_AUDIO_BYTES);  /* inject silence */
+        memset(samples_out, 0, USRP_AUDIO_BYTES);
+        atomic_fetch_add(&jb->silence_count, 1);
     }
 
     jb->playout_seq++;
@@ -124,6 +127,11 @@ float jitter_buffer_estimate_ms(const jitter_buffer_t *jb)
 uint64_t jitter_buffer_late_count(jitter_buffer_t *jb)
 {
     return atomic_exchange(&jb->late_count, 0);
+}
+
+uint64_t jitter_buffer_silence_count(jitter_buffer_t *jb)
+{
+    return atomic_exchange(&jb->silence_count, 0);
 }
 
 void jitter_buffer_destroy(jitter_buffer_t *jb)

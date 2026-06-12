@@ -198,26 +198,32 @@ A status line is written at the end of every transmission, summarising that tran
 | `input-end:` | input_active just dropped — the signal rusrp was receiving ended |
 | `output-end:` | output_active just released — rusrp finished keying the output |
 
-Each event type only shows the levels relevant to that stream:
+Each event type shows only the fields relevant to that path:
 
 ```
-input-end:  in=-12.3pk/-18.0rms dBFS input_active=0 output_active=0 jitter=42.0ms late=0 wd_events=0 overruns=0 underruns=0
-output-end: out=-14.1pk/-20.3rms dBFS input_active=0 output_active=0 jitter=42.0ms late=0 wd_events=0 overruns=0 underruns=0
+input-end:  in=-12.3pk/-18.0rms dBFS overruns=0
+output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 wd_events=0 underruns=0
 ```
+
+**`input-end` fields:**
 
 | Field | Meaning |
 |---|---|
-| `in=Xpk/Yrms dBFS` | Peak and RMS level of the signal rusrp received, accumulated over that transmission (`input-end` only) |
-| `out=Xpk/Yrms dBFS` | Peak and RMS level rusrp sent to the output, accumulated over that transmission (`output-end` only) |
-| `input_active=0/1` | Whether input was active at the moment of logging |
-| `output_active=0/1` | Whether output was active at the moment of logging |
-| `jitter=X ms` | Jitter buffer fill estimate at log time |
-| `late=N` | USRP packets that arrived after their playout deadline (network glitches) |
-| `wd_events=N` | Times the watchdog forced an unkey due to network timeout |
-| `overruns=N` | ALSA capture buffer overruns |
+| `in=Xpk/Yrms dBFS` | Peak and RMS level of captured audio, accumulated over the transmission |
+| `overruns=N` | ALSA capture buffer overruns — ALSA filled its ring buffer before rusrp could read it; audio frames were lost |
+
+**`output-end` fields:**
+
+| Field | Meaning |
+|---|---|
+| `out=Xpk/Yrms dBFS` | Peak and RMS level of audio sent to the output device, accumulated over the transmission |
+| `jitter=X ms` | Estimated network jitter at log time |
+| `late=N` | USRP packets dropped on arrival (arrived behind the playout cursor or outside the jitter buffer window) |
+| `silence=N` | Playout slots where no frame was available — silence injected; high values with low `late` indicate packet loss before the frame reached us |
+| `wd_events=N` | Times the watchdog forced output_active release due to network timeout |
 | `underruns=N` | ALSA playback buffer underruns |
 
-When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels and confirms the daemon is alive; levels between transmissions will read near −96 dBFS (silence).
+When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels, `input_active=` and `output_active=` flags, and all stats from both paths — useful to confirm the daemon is alive between transmissions.
 
 ### Debug messages
 
