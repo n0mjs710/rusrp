@@ -32,8 +32,21 @@ uint64_t jitter_buffer_late_count(jitter_buffer_t *jb);
 /* Number of playout slots where no frame was available (silence injected) since last call (resets counter). */
 uint64_t jitter_buffer_silence_count(jitter_buffer_t *jb);
 
-/* Reset the silence counter — call at the start of each transmission so the
- * output-end log reflects only the current transmission's missed frames. */
+/* Reset the live silence counter — call at the rising edge of output_active so
+ * pre-transmission idle pulls don't inflate the per-transmission count. */
 void jitter_buffer_reset_silence_count(jitter_buffer_t *jb);
+
+/* Latch the current silence count into a stable snapshot for output-end logging,
+ * and accumulate it into the heartbeat bucket.  Call at the falling edge of
+ * output_active (in the playback thread) before telemetry polls. */
+void jitter_buffer_latch_silence(jitter_buffer_t *jb);
+
+/* Return (and reset) the latched per-transmission silence count.
+ * Use for output-end log lines — reflects only mid-transmission misses. */
+uint64_t jitter_buffer_latched_silence_count(jitter_buffer_t *jb);
+
+/* Return (and reset) the accumulated mid-transmission silence since the last
+ * heartbeat read.  Use for heartbeat log lines. */
+uint64_t jitter_buffer_hb_silence_count(jitter_buffer_t *jb);
 
 void jitter_buffer_destroy(jitter_buffer_t *jb);

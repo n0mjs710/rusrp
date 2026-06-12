@@ -161,6 +161,7 @@ static void *playback_thread_fn(void *arg)
             jitter_buffer_reset_silence_count(ctx->jb);
         } else if (!output_active && prev_output_active) {
             audio_trim_tx_end(ctx->out_trim);
+            jitter_buffer_latch_silence(ctx->jb);
         }
         prev_output_active = output_active;
 

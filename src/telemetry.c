@@ -87,7 +87,6 @@ void telemetry_log(telemetry_t *tel,
     bool output_active = logic ? logic_hid_output_active(logic) : false;
     float jitter        = jb   ? jitter_buffer_estimate_ms(jb)    : 0.0f;
     uint64_t late       = jb   ? jitter_buffer_late_count(jb)     : 0;
-    uint64_t silence    = jb   ? jitter_buffer_silence_count(jb)  : 0;
     uint64_t net_timeouts = wd  ? watchdog_timeout_count(wd)       : 0;
 
     /* INFO: one summary line on the falling edge of each transmission. */
@@ -98,15 +97,19 @@ void telemetry_log(telemetry_t *tel,
                    STAT_INPUT_LEVELS | STAT_INPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, silence, net_timeouts, overruns, underruns);
+                   jitter, late, 0, net_timeouts, overruns, underruns);
         log_now = true;
     }
     if (tel->prev_output_active && !output_active) {
+        /* Read the latched silence count — set by the playback thread at the
+         * exact falling edge of output_active, so it reflects only mid-
+         * transmission misses, not post-tx idle pulls. */
+        uint64_t tx_silence = jb ? jitter_buffer_latched_silence_count(jb) : 0;
         log_status(LOG_INFO, "output-end",
                    STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, silence, net_timeouts, overruns, underruns);
+                   jitter, late, tx_silence, net_timeouts, overruns, underruns);
         log_now = true;
     }
 
@@ -125,12 +128,15 @@ void telemetry_log(telemetry_t *tel,
         now - tel->last_log_ts >=
             (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
         tel->last_log_ts = now;
+        /* hb_silence accumulates mid-tx missed frames across all transmissions
+         * since the last heartbeat — excludes inter-transmission idle pulls. */
+        uint64_t hb_silence = jb ? jitter_buffer_hb_silence_count(jb) : 0;
         log_status(LOG_DEBUG, "heartbeat",
                    STAT_INPUT_LEVELS | STAT_OUTPUT_LEVELS | STAT_ACTIVE_FLAGS |
                    STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, silence, net_timeouts, overruns, underruns);
+                   jitter, late, hb_silence, net_timeouts, overruns, underruns);
     } else if (now - tel->last_log_ts >=
                    (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
         tel->last_log_ts = now;
