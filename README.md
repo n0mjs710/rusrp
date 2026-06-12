@@ -30,13 +30,13 @@ Analog device                            AllStarLink server
         │            │                           │
         │           USRP ───────────────► ASL3 chan_usrp
         │                                        │
-   audio in ◄── ALSA playback             USRP ◄─┘
-        │            ▲
-        │        edge trim   (output_*_trim_ms)
-        │            ▲
-        │        250 Hz HPF  (output_highpass)
-        │            ▲
-        │      jitter buffer
+   audio in ◄── ALSA playback                    |
+        │            ▲                           |
+        │        edge trim   (output_*_trim_ms)  |
+        │            ▲                           |
+        │        250 Hz HPF  (output_highpass)   |
+        │            ▲                           |
+        │      jitter buffer ◄──────────────── USRP
         │
   input_active ──► VOLDN (HID input, byte 0 bit 1)
   output_active ◄─ GPIO3 (HID output report)
