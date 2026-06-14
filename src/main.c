@@ -22,7 +22,8 @@
 
 #define DEFAULT_CONFIG "/etc/rusrp/rusrp.toml"
 
-static atomic_bool g_stop = ATOMIC_VAR_INIT(false);
+static atomic_bool g_stop  = ATOMIC_VAR_INIT(false);
+static atomic_int  g_floor = ATOMIC_VAR_INIT(FLOOR_IDLE);
 
 static void sig_handler(int sig)
 {
@@ -41,6 +42,8 @@ typedef struct {
     atomic_uint_fast32_t     tx_seq;
     atomic_bool              prev_keyed;
     atomic_uint_fast64_t     clip_count;
+    atomic_int              *floor;
+    bool                     floor_held;  /* only touched by capture callback */
 } tx_ctx_t;
 
 /* Called from the ALSA capture thread for each 160-sample frame. */
@@ -64,17 +67,34 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
 
     /* Rising edge: assert KEY immediately (channel capture), start trim. */
     if (keyed && !was_keyed) {
-        if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "input: active");
-        audio_trim_tx_start(ctx->in_trim);
-        seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
-                                                   memory_order_relaxed);
-        usrp_build_key(pkt, seq, 1);
-        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        bool proceed = true;
+        if (ctx->cfg->logic.half_duplex) {
+            if (ctx->floor_held) {
+                /* Already hold floor (back-to-back input transmission). */
+            } else {
+                int expected = FLOOR_IDLE;
+                proceed = atomic_compare_exchange_strong_explicit(
+                    ctx->floor, &expected, (int)FLOOR_INPUT,
+                    memory_order_acquire, memory_order_relaxed);
+                if (!proceed)
+                    sd_journal_print(LOG_INFO,
+                                     "input: blocked (output active)");
+            }
+        }
+        ctx->floor_held = proceed;
+        if (proceed) {
+            if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
+                sd_journal_print(LOG_DEBUG, "input: active");
+            audio_trim_tx_start(ctx->in_trim);
+            seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
+                                                       memory_order_relaxed);
+            usrp_build_key(pkt, seq, 1);
+            usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        }
     }
 
     /* Falling edge: log, begin trailing drain (UNKEY sent after drain). */
-    if (!keyed && was_keyed) {
+    if (!keyed && was_keyed && ctx->floor_held) {
         if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "input: ended");
         audio_trim_tx_end(ctx->in_trim);
@@ -105,6 +125,10 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 0);
         usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        if (ctx->cfg->logic.half_duplex && ctx->floor_held) {
+            atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
+            ctx->floor_held = false;
+        }
     }
 }
 
@@ -239,7 +263,7 @@ int main(int argc, char *argv[])
     /* ── init: HID logic first (holds fail-safe state) ── */
     if (logic_hid_create(&logic, &cfg) != 0)                           goto fail;
     if (jitter_buffer_create(&jb, cfg.network.jitter_buffer_ms) != 0) goto fail;
-    if (watchdog_create(&wd, &cfg, logic, jb) != 0)                   goto fail;
+    if (watchdog_create(&wd, &cfg, logic, jb, &g_floor) != 0)         goto fail;
 
     /* ── init: USRP transport ── */
     rx_ctx_t rx_ctx = { .wd = wd, .jb = jb };
@@ -267,11 +291,13 @@ int main(int argc, char *argv[])
     atomic_init(&tx_ctx.tx_seq,     0);
     atomic_init(&tx_ctx.prev_keyed, false);
     atomic_init(&tx_ctx.clip_count, 0);
-    tx_ctx.cfg       = &cfg;
-    tx_ctx.transport = transport;
-    tx_ctx.in_proc   = in_proc;
-    tx_ctx.in_trim   = in_trim;
-    tx_ctx.logic     = logic;
+    tx_ctx.cfg         = &cfg;
+    tx_ctx.transport   = transport;
+    tx_ctx.in_proc     = in_proc;
+    tx_ctx.in_trim     = in_trim;
+    tx_ctx.logic       = logic;
+    tx_ctx.floor       = &g_floor;
+    tx_ctx.floor_held  = false;
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
         goto fail;

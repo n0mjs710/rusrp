@@ -203,6 +203,7 @@ int config_load(config_t *cfg, const char *path)
         read_int(t,  "output_active_gpio", &cfg->logic.output_active_gpio);
         read_bool(t, "input_active_low",   &cfg->logic.input_active_low);
         read_bool(t, "output_active_low",  &cfg->logic.output_active_low);
+        read_bool(t, "half_duplex",        &cfg->logic.half_duplex);
     }
 
     if ((t = toml_table_in(root, "network")))

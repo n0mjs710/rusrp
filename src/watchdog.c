@@ -21,6 +21,8 @@ struct watchdog {
     atomic_uint_least64_t ptt_ready_ts;  /* monotonic_ms when to fire PTT (0=none) */
     atomic_uint_least64_t event_count;
     uint64_t         startup_end_ts;
+    atomic_int      *floor;              /* shared half-duplex floor state */
+    atomic_bool      output_floor_held;  /* true if output path currently owns the floor */
 };
 
 static void force_unkey(watchdog_t *wd, const char *reason)
@@ -32,6 +34,12 @@ static void force_unkey(watchdog_t *wd, const char *reason)
         logic_hid_set_output(wd->logic, false);
         jitter_buffer_flush(wd->jb);
         atomic_fetch_add(&wd->event_count, 1);
+    }
+    /* Release floor regardless — avoids a stuck floor if force_unkey fires
+     * while we hold it (e.g. network timeout during half-duplex output). */
+    if (wd->cfg->logic.half_duplex &&
+        atomic_exchange(&wd->output_floor_held, false)) {
+        atomic_store_explicit(wd->floor, FLOOR_IDLE, memory_order_release);
     }
 }
 
@@ -83,6 +91,11 @@ static void *watchdog_thread_fn(void *arg)
             if ((now - key_end) >= wd->cfg->watchdog.output_active_tail_ms) {
                 logic_hid_set_output(wd->logic, false);
                 atomic_store(&wd->key_end_ts, 0);
+                /* Release floor after PTT fully deasserted. */
+                if (wd->cfg->logic.half_duplex &&
+                    atomic_exchange(&wd->output_floor_held, false)) {
+                    atomic_store_explicit(wd->floor, FLOOR_IDLE, memory_order_release);
+                }
             }
         }
     }
@@ -93,7 +106,8 @@ static void *watchdog_thread_fn(void *arg)
 }
 
 int watchdog_create(watchdog_t **wd, const config_t *cfg,
-                    logic_hid_t *logic, jitter_buffer_t *jb)
+                    logic_hid_t *logic, jitter_buffer_t *jb,
+                    atomic_int *floor)
 {
     watchdog_t *self = calloc(1, sizeof(*self));
     if (!self) return -1;
@@ -101,14 +115,16 @@ int watchdog_create(watchdog_t **wd, const config_t *cfg,
     self->cfg   = cfg;
     self->logic = logic;
     self->jb    = jb;
+    self->floor = floor;
     self->startup_end_ts = monotonic_ms() + cfg->watchdog.startup_output_inhibit_ms;
 
-    atomic_init(&self->stop,           false);
-    atomic_init(&self->keyed,          false);
-    atomic_init(&self->last_packet_ts, 0);
-    atomic_init(&self->key_end_ts,     0);
-    atomic_init(&self->ptt_ready_ts,   0);
-    atomic_init(&self->event_count,    0);
+    atomic_init(&self->stop,               false);
+    atomic_init(&self->keyed,              false);
+    atomic_init(&self->last_packet_ts,     0);
+    atomic_init(&self->key_end_ts,         0);
+    atomic_init(&self->ptt_ready_ts,       0);
+    atomic_init(&self->event_count,        0);
+    atomic_init(&self->output_floor_held,  false);
 
     if (pthread_create(&self->thread, NULL, watchdog_thread_fn, self) != 0) {
         free(self);
@@ -140,23 +156,48 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
          * plays the moment the output keys up. */
         jitter_buffer_flush(wd->jb);
         atomic_store(&wd->key_end_ts, 0);
-        uint64_t fire = monotonic_ms() + wd->cfg->network.jitter_buffer_ms;
-        atomic_store(&wd->ptt_ready_ts, fire);
-        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "output: pending %u ms",
-                             wd->cfg->network.jitter_buffer_ms);
+
+        bool proceed = true;
+        if (wd->cfg->logic.half_duplex) {
+            if (atomic_load(&wd->output_floor_held)) {
+                /* Already hold the floor (back-to-back from network). */
+            } else {
+                int expected = FLOOR_IDLE;
+                proceed = atomic_compare_exchange_strong_explicit(
+                    wd->floor, &expected, (int)FLOOR_OUTPUT,
+                    memory_order_acquire, memory_order_relaxed);
+                if (!proceed)
+                    sd_journal_print(LOG_INFO,
+                                     "output: blocked (input active)");
+            }
+        }
+        atomic_store(&wd->output_floor_held, proceed);
+
+        if (proceed) {
+            uint64_t fire = monotonic_ms() + wd->cfg->network.jitter_buffer_ms;
+            atomic_store(&wd->ptt_ready_ts, fire);
+            if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
+                sd_journal_print(LOG_DEBUG, "output: pending %u ms",
+                                 wd->cfg->network.jitter_buffer_ms);
+        }
     } else if (!keyed && prev) {
         /* UNKEY: cancel pending output, flush buffers to prevent stale audio
          * bleeding into the next transmission, then hold output while the
          * audio buffer drains. */
         atomic_store(&wd->ptt_ready_ts, 0);
         jitter_buffer_flush(wd->jb);
-        if (wd->alsa)
-            audio_alsa_request_drain(wd->alsa);
-        atomic_store(&wd->key_end_ts, monotonic_ms());
-        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-            sd_journal_print(LOG_DEBUG, "output: holding %u ms for buffer drain",
-                             wd->cfg->watchdog.output_active_tail_ms);
+        if (atomic_load(&wd->output_floor_held)) {
+            /* Only drain and start tail timer if we actually keyed output. */
+            if (wd->alsa)
+                audio_alsa_request_drain(wd->alsa);
+            atomic_store(&wd->key_end_ts, monotonic_ms());
+            if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
+                sd_journal_print(LOG_DEBUG, "output: holding %u ms for buffer drain",
+                                 wd->cfg->watchdog.output_active_tail_ms);
+            /* Floor released in watchdog_thread_fn when tail timer expires. */
+        }
+        /* When blocked (output_floor_held=false), key_end_ts stays 0 and
+         * the floor needs no release — we never claimed it. */
     }
 }
 

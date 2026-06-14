@@ -6,11 +6,17 @@
 #include "audio_alsa.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
+
+/* Half-duplex floor state — shared between the capture callback and watchdog.
+ * First direction to claim FLOOR_IDLE wins; the other is blocked until release. */
+typedef enum { FLOOR_IDLE = 0, FLOOR_INPUT, FLOOR_OUTPUT } floor_t;
 
 typedef struct watchdog watchdog_t;
 
 int  watchdog_create(watchdog_t **wd, const config_t *cfg,
-                     logic_hid_t *logic, jitter_buffer_t *jb);
+                     logic_hid_t *logic, jitter_buffer_t *jb,
+                     atomic_int *floor);
 
 /* Provide the ALSA handle after audio is initialized, to enable playback
  * drain on transmission end. */

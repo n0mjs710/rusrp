@@ -27,6 +27,7 @@ typedef struct {
     int  output_active_gpio;   /* GPIO number for output_active (PTT); default 3 */
     bool input_active_low;
     bool output_active_low;
+    bool half_duplex;          /* block second direction until first releases */
 } config_logic_t;
 
 typedef struct {

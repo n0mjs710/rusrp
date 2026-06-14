@@ -104,6 +104,7 @@ Key settings:
 | `[logic]` | `output_active_gpio` | GPIO number for PTT (default 3) |
 | `[logic]` | `input_active_low` | `true` if the input signal is active when the line is pulled low (most hardware) |
 | `[logic]` | `output_active_low` | `true` if the output signal is active-low (open-collector driver — most hardware) |
+| `[logic]` | `half_duplex` | `true` to block the second direction until the first releases (first-come-first-served); useful when hardware or wireline configuration cannot cleanly handle simultaneous RX and TX |
 | `[network]` | `jitter_buffer_ms` | Jitter buffer depth, 40–250 ms; non-multiples of 20 round up to the next frame |
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 
