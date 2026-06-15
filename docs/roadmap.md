@@ -54,20 +54,23 @@ by transitions in the `keyup` field of normal voice/Opus packets.  In rusrp, the
 the audio area and the appropriate `keyup` value; it does not introduce a distinct
 frame type.
 
-Standard USRP type values (from `usrp_protocol.h`):
+Known USRP type values (from `usrp_protocol.h`):
 
 ```
-type = 0: USRP_TYPE_VOICE   (PCM, 160 × s16le samples)
-type = 1: USRP_TYPE_DTMF
-type = 2: USRP_TYPE_TEXT
-type = 3: USRP_TYPE_PING
-type = 4: USRP_TYPE_TLV     (reserved — do not use)
+type = 0: USRP_TYPE_VOICE       original (KA1RBI): PCM, 160 × s16le samples
+type = 1: USRP_TYPE_DTMF        original (KA1RBI): out-of-band DTMF digit
+type = 2: USRP_TYPE_TEXT        original (KA1RBI): null-terminated ASCII metadata
+type = 3: USRP_TYPE_PING        DVSwitch addition: keepalive / NAT traversal
+type = 4: USRP_TYPE_TLV         DVSwitch addition: TLV container for AMBE/IMBE frames
+type = 5: USRP_TYPE_VOICE_ADPCM DVSwitch addition: ADPCM compressed audio
+type = 6: USRP_TYPE_VOICE_ULAW  DVSwitch addition: μ-law compressed audio
 ```
 
+Types 4–6 are closed-source DVSwitch extensions not implemented in ASL3's chan_usrp.
 We extend the type space with:
 
 ```
-type = 5: USRP_TYPE_OPUS    (Opus-encoded audio, variable length — see below)
+type = 7: USRP_TYPE_OPUS        rusrp extension: Opus-encoded audio, variable length
 ```
 
 ---

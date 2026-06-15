@@ -10,11 +10,14 @@
 #define USRP_PKT_LEN        (USRP_HEADER_LEN + USRP_AUDIO_BYTES)  /* 352 bytes */
 
 typedef enum {
-    USRP_TYPE_VOICE = 0,
-    USRP_TYPE_DTMF  = 1,
-    USRP_TYPE_TEXT  = 2,
-    USRP_TYPE_PING  = 3,
-    USRP_TYPE_TLV   = 4,
+    USRP_TYPE_VOICE      = 0,
+    USRP_TYPE_DTMF       = 1,
+    USRP_TYPE_TEXT       = 2,
+    USRP_TYPE_PING       = 3,
+    USRP_TYPE_TLV        = 4, /* DVSwitch: generic TLV/AMBE carrier — do not use */
+    USRP_TYPE_VOICE_ADPCM = 5, /* DVSwitch: ADPCM compressed audio — do not use   */
+    USRP_TYPE_VOICE_ULAW  = 6, /* DVSwitch: μ-law compressed audio — do not use   */
+    USRP_TYPE_OPUS       = 7, /* rusrp extension: Opus-encoded audio, var length  */
 } usrp_type_t;
 
 typedef struct {
