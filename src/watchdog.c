@@ -19,7 +19,6 @@ struct watchdog {
     atomic_uint_least64_t last_packet_ts;
     atomic_uint_least64_t key_end_ts;    /* monotonic_ms when unkey was detected */
     atomic_uint_least64_t ptt_ready_ts;  /* monotonic_ms when to fire PTT (0=none) */
-    atomic_uint_least64_t event_count;
     uint64_t         startup_end_ts;
     atomic_int      *floor;              /* shared half-duplex floor state */
     atomic_bool      output_floor_held;  /* true if output path currently owns the floor */
@@ -33,7 +32,6 @@ static void force_unkey(watchdog_t *wd, const char *reason)
         sd_journal_print(LOG_WARNING, "output: forced release: %s", reason);
         logic_hid_set_output(wd->logic, false);
         jitter_buffer_flush(wd->jb);
-        atomic_fetch_add(&wd->event_count, 1);
     }
     /* Release floor regardless — avoids a stuck floor if force_unkey fires
      * while we hold it (e.g. network timeout during half-duplex output). */
@@ -123,7 +121,6 @@ int watchdog_create(watchdog_t **wd, const config_t *cfg,
     atomic_init(&self->last_packet_ts,     0);
     atomic_init(&self->key_end_ts,         0);
     atomic_init(&self->ptt_ready_ts,       0);
-    atomic_init(&self->event_count,        0);
     atomic_init(&self->output_floor_held,  false);
 
     if (pthread_create(&self->thread, NULL, watchdog_thread_fn, self) != 0) {
@@ -199,11 +196,6 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
         /* When blocked (output_floor_held=false), key_end_ts stays 0 and
          * the floor needs no release — we never claimed it. */
     }
-}
-
-uint64_t watchdog_timeout_count(watchdog_t *wd)
-{
-    return atomic_exchange(&wd->event_count, 0);
 }
 
 void watchdog_destroy(watchdog_t *wd)

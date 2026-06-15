@@ -28,7 +28,4 @@ void watchdog_packet_received(watchdog_t *wd);
 /* Call on USRP key state change. */
 void watchdog_key_event(watchdog_t *wd, bool keyed);
 
-/* Number of forced output releases due to network timeout since last call (resets counter). */
-uint64_t watchdog_timeout_count(watchdog_t *wd);
-
 void watchdog_destroy(watchdog_t *wd);

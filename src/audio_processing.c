@@ -28,9 +28,13 @@ struct audio_proc {
     bool      enable_hpf;
     float     gain_linear;
     biquad_t  hpf[HPF_SECTIONS];
+    /* peak, rms_accum, rms_count are written by the audio thread and read by
+     * the telemetry thread without synchronization.  The race is benign for a
+     * level display; a mutex in the audio callback would cost more than the UB. */
     float     peak;
     float     rms_accum;
     size_t    rms_count;
+    atomic_uint_fast64_t clip_count;
 };
 
 int audio_proc_create(audio_proc_t **p, bool enable_hpf, float gain_db)
@@ -39,12 +43,12 @@ int audio_proc_create(audio_proc_t **p, bool enable_hpf, float gain_db)
     if (!self) return -1;
     self->enable_hpf  = enable_hpf;
     self->gain_linear = powf(10.0f, gain_db / 20.0f);
+    atomic_init(&self->clip_count, 0);
     *p = self;
     return 0;
 }
 
-void audio_proc_run(audio_proc_t *p, int16_t *samples, size_t count,
-                    uint64_t *clip_count_out)
+void audio_proc_run(audio_proc_t *p, int16_t *samples, size_t count)
 {
     uint64_t clips = 0;
 
@@ -74,7 +78,8 @@ void audio_proc_run(audio_proc_t *p, int16_t *samples, size_t count,
         p->rms_count++;
     }
 
-    *clip_count_out += clips;
+    if (clips)
+        atomic_fetch_add_explicit(&p->clip_count, clips, memory_order_relaxed);
 }
 
 void audio_proc_get_levels(const audio_proc_t *p,
@@ -97,6 +102,11 @@ void audio_proc_reset_levels(audio_proc_t *p)
     p->peak      = 0.0f;
     p->rms_accum = 0.0f;
     p->rms_count = 0;
+}
+
+uint64_t audio_proc_clip_count(audio_proc_t *p)
+{
+    return atomic_exchange(&p->clip_count, 0);
 }
 
 void audio_proc_destroy(audio_proc_t *p)

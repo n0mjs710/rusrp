@@ -29,9 +29,6 @@ float jitter_buffer_estimate_ms(const jitter_buffer_t *jb);
 /* Number of packets dropped as late/out-of-window since last call (resets counter). */
 uint64_t jitter_buffer_late_count(jitter_buffer_t *jb);
 
-/* Number of playout slots where no frame was available (silence injected) since last call (resets counter). */
-uint64_t jitter_buffer_silence_count(jitter_buffer_t *jb);
-
 /* Reset the live silence counter — call at the rising edge of output_active so
  * pre-transmission idle pulls don't inflate the per-transmission count. */
 void jitter_buffer_reset_silence_count(jitter_buffer_t *jb);

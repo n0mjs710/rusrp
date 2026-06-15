@@ -191,11 +191,11 @@ void audio_alsa_request_drain(audio_alsa_t *a)
     atomic_store_explicit(&a->drain_requested, true, memory_order_relaxed);
 }
 
-void audio_alsa_get_stats(const audio_alsa_t *a,
+void audio_alsa_get_stats(audio_alsa_t *a,
                           uint64_t *overruns_out, uint64_t *underruns_out)
 {
-    *overruns_out  = atomic_load(&a->overruns);
-    *underruns_out = atomic_load(&a->underruns);
+    *overruns_out  = atomic_exchange(&a->overruns,  0);
+    *underruns_out = atomic_exchange(&a->underruns, 0);
 }
 
 void audio_alsa_destroy(audio_alsa_t *a)

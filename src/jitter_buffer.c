@@ -125,17 +125,14 @@ void jitter_buffer_flush(jitter_buffer_t *jb)
 
 float jitter_buffer_estimate_ms(const jitter_buffer_t *jb)
 {
+    /* jitter_ms is updated under lock by push; read here without lock.
+     * Benign race — a stale float read is acceptable for a diagnostic metric. */
     return jb->jitter_ms;
 }
 
 uint64_t jitter_buffer_late_count(jitter_buffer_t *jb)
 {
     return atomic_exchange(&jb->late_count, 0);
-}
-
-uint64_t jitter_buffer_silence_count(jitter_buffer_t *jb)
-{
-    return atomic_exchange(&jb->silence_count, 0);
 }
 
 void jitter_buffer_reset_silence_count(jitter_buffer_t *jb)

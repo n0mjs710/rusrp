@@ -66,10 +66,16 @@ int usrp_transport_create(usrp_transport_t **out, const config_t *cfg,
     setsockopt(t->sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     struct sockaddr_in local = {
-        .sin_family      = AF_INET,
-        .sin_port        = htons(cfg->usrp.local_port),
-        .sin_addr.s_addr = inet_addr(cfg->usrp.bind_address),
+        .sin_family = AF_INET,
+        .sin_port   = htons(cfg->usrp.local_port),
     };
+    if (inet_pton(AF_INET, cfg->usrp.bind_address, &local.sin_addr) != 1) {
+        sd_journal_print(LOG_ERR, "config: invalid bind_address: %s",
+                         cfg->usrp.bind_address);
+        close(t->sockfd);
+        free(t);
+        return -1;
+    }
     if (bind(t->sockfd, (struct sockaddr *)&local, sizeof(local)) < 0) {
         sd_journal_print(LOG_ERR, "usrp: bind :%u: %m", cfg->usrp.local_port);
         close(t->sockfd);

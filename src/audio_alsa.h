@@ -21,7 +21,8 @@ int  audio_alsa_write(audio_alsa_t *a, const int16_t *samples, size_t count);
  * audio and restarts the stream. Thread-safe; call from any thread. */
 void audio_alsa_request_drain(audio_alsa_t *a);
 
-void audio_alsa_get_stats(const audio_alsa_t *a,
+/* Read and reset per-call overrun/underrun counters. */
+void audio_alsa_get_stats(audio_alsa_t *a,
                           uint64_t *overruns_out, uint64_t *underruns_out);
 
 void audio_alsa_destroy(audio_alsa_t *a);

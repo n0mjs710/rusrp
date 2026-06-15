@@ -2,6 +2,21 @@
 #include <string.h>
 #include <arpa/inet.h>
 
+/* Safe big-endian word accessors — avoids strict aliasing UB from casting
+ * uint8_t* to uint32_t*.  Compilers reduce these to single load/store insns. */
+static inline uint32_t rd32(const uint8_t *p)
+{
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return ntohl(v);
+}
+
+static inline void wr32(uint8_t *p, uint32_t v)
+{
+    v = htonl(v);
+    memcpy(p, &v, 4);
+}
+
 int usrp_parse(const uint8_t *buf, size_t len, usrp_packet_t *out)
 {
     if (len < USRP_HEADER_LEN)
@@ -9,14 +24,13 @@ int usrp_parse(const uint8_t *buf, size_t len, usrp_packet_t *out)
     if (memcmp(buf, USRP_MAGIC, 4) != 0)
         return -1;
 
-    const uint32_t *h = (const uint32_t *)(const void *)buf;
-    out->seq      = ntohl(h[1]);
-    out->memory   = ntohl(h[2]);
-    out->keyup    = ntohl(h[3]);
-    out->talker   = ntohl(h[4]);
-    out->type     = (usrp_type_t)ntohl(h[5]);
-    out->mpxid    = ntohl(h[6]);
-    out->reserved = ntohl(h[7]);
+    out->seq      = rd32(buf + 4);
+    out->memory   = rd32(buf + 8);
+    out->keyup    = rd32(buf + 12);
+    out->talker   = rd32(buf + 16);
+    out->type     = (usrp_type_t)rd32(buf + 20);
+    out->mpxid    = rd32(buf + 24);
+    out->reserved = rd32(buf + 28);
 
     memset(out->audio, 0, sizeof(out->audio));
     if (out->type == USRP_TYPE_VOICE && len >= USRP_PKT_LEN)
@@ -30,10 +44,9 @@ void usrp_build_voice(uint8_t *buf, uint32_t seq, uint32_t keyup,
 {
     memset(buf, 0, USRP_PKT_LEN);
     memcpy(buf, USRP_MAGIC, 4);
-    uint32_t *h = (uint32_t *)(void *)buf;
-    h[1] = htonl(seq);
-    h[3] = htonl(keyup);
-    h[5] = htonl((uint32_t)USRP_TYPE_VOICE);
+    wr32(buf + 4,  seq);
+    wr32(buf + 12, keyup);
+    wr32(buf + 20, (uint32_t)USRP_TYPE_VOICE);
     memcpy(buf + USRP_HEADER_LEN, audio, USRP_AUDIO_BYTES);
 }
 
@@ -41,10 +54,9 @@ void usrp_build_key(uint8_t *buf, uint32_t seq, uint32_t keyup)
 {
     memset(buf, 0, USRP_PKT_LEN);
     memcpy(buf, USRP_MAGIC, 4);
-    uint32_t *h = (uint32_t *)(void *)buf;
-    h[1] = htonl(seq);
-    h[3] = htonl(keyup);
-    h[5] = htonl((uint32_t)USRP_TYPE_VOICE);
+    wr32(buf + 4,  seq);
+    wr32(buf + 12, keyup);
+    wr32(buf + 20, (uint32_t)USRP_TYPE_VOICE);
     /* audio payload remains zero (silence) */
 }
 

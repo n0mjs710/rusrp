@@ -40,8 +40,7 @@ typedef struct {
     audio_trim_t            *in_trim;
     logic_hid_t             *logic;
     atomic_uint_fast32_t     tx_seq;
-    atomic_bool              prev_keyed;
-    atomic_uint_fast64_t     clip_count;
+    bool                     prev_keyed;
     atomic_int              *floor;
     bool                     floor_held;  /* only touched by capture callback */
 } tx_ctx_t;
@@ -54,14 +53,11 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
     int16_t frame[USRP_AUDIO_FRAMES];
     memcpy(frame, samples, count * sizeof(int16_t));
 
-    uint64_t delta = 0;
-    audio_proc_run(ctx->in_proc, frame, count, &delta);
-    if (delta)
-        atomic_fetch_add_explicit(&ctx->clip_count, delta, memory_order_relaxed);
+    audio_proc_run(ctx->in_proc, frame, count);
 
     bool keyed     = logic_hid_input_active(ctx->logic);
-    bool was_keyed = atomic_exchange_explicit(&ctx->prev_keyed, keyed,
-                                              memory_order_relaxed);
+    bool was_keyed = ctx->prev_keyed;
+    ctx->prev_keyed = keyed;
     uint8_t  pkt[USRP_PKT_LEN];
     uint32_t seq;
 
@@ -161,7 +157,6 @@ typedef struct {
     jitter_buffer_t      *jb;
     const logic_hid_t    *logic;
     atomic_bool          *stop;
-    atomic_uint_fast64_t  clip_count;
 } pb_ctx_t;
 
 /* The ALSA blocking writei provides the 20 ms frame clock; no separate
@@ -200,11 +195,7 @@ static void *playback_thread_fn(void *arg)
         if (output_active) {
             if (audio_trim_process(ctx->out_trim, jb_frame, trimmed)) {
                 memcpy(work, trimmed, sizeof(work));
-                uint64_t delta = 0;
-                audio_proc_run(ctx->out_proc, work, USRP_AUDIO_FRAMES, &delta);
-                if (delta)
-                    atomic_fetch_add_explicit(&ctx->clip_count, delta,
-                                              memory_order_relaxed);
+                audio_proc_run(ctx->out_proc, work, USRP_AUDIO_FRAMES);
                 to_write = work;
             }
         }
@@ -290,9 +281,7 @@ int main(int argc, char *argv[])
 
     /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};
-    atomic_init(&tx_ctx.tx_seq,     0);
-    atomic_init(&tx_ctx.prev_keyed, false);
-    atomic_init(&tx_ctx.clip_count, 0);
+    atomic_init(&tx_ctx.tx_seq, 0);
     tx_ctx.cfg         = &cfg;
     tx_ctx.transport   = transport;
     tx_ctx.in_proc     = in_proc;
@@ -307,7 +296,6 @@ int main(int argc, char *argv[])
 
     /* ── init: playback thread ── */
     pb_ctx_t pb_ctx = {0};
-    atomic_init(&pb_ctx.clip_count, 0);
     pb_ctx.alsa     = alsa;
     pb_ctx.out_proc = out_proc;
     pb_ctx.out_trim = out_trim;

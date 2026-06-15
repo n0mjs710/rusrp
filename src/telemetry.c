@@ -28,6 +28,8 @@ int telemetry_create(telemetry_t **tel, const config_t *cfg)
 #define STAT_ACTIVE_FLAGS    (1u << 2)  /* input_active= output_active= */
 #define STAT_INPUT_PATH      (1u << 3)  /* overruns= */
 #define STAT_OUTPUT_PATH     (1u << 4)  /* jitter= late= silence= underruns= */
+#define STAT_IN_CLIPS        (1u << 5)  /* clips= (input path) */
+#define STAT_OUT_CLIPS       (1u << 6)  /* clips= (output path) */
 
 static void log_status(int priority, const char *label,
                        unsigned int flags,
@@ -36,9 +38,10 @@ static void log_status(int priority, const char *label,
                        bool  input_active, bool output_active,
                        float jitter,
                        uint64_t late, uint64_t silence,
-                       uint64_t overruns, uint64_t underruns)
+                       uint64_t overruns, uint64_t underruns,
+                       uint64_t in_clips, uint64_t out_clips)
 {
-    char buf[256];
+    char buf[320];
     int n = snprintf(buf, sizeof(buf), "%s:", label);
     if (flags & STAT_INPUT_LEVELS)
         n += snprintf(buf + n, sizeof(buf) - n,
@@ -53,6 +56,9 @@ static void log_status(int priority, const char *label,
     if (flags & STAT_INPUT_PATH)
         n += snprintf(buf + n, sizeof(buf) - n,
                       " overruns=%llu", (unsigned long long)overruns);
+    if (flags & STAT_IN_CLIPS)
+        n += snprintf(buf + n, sizeof(buf) - n,
+                      " clips=%llu", (unsigned long long)in_clips);
     if (flags & STAT_OUTPUT_PATH)
         n += snprintf(buf + n, sizeof(buf) - n,
                       " jitter=%.1fms late=%llu silence=%llu underruns=%llu",
@@ -60,6 +66,9 @@ static void log_status(int priority, const char *label,
                       (unsigned long long)late,
                       (unsigned long long)silence,
                       (unsigned long long)underruns);
+    if (flags & STAT_OUT_CLIPS)
+        n += snprintf(buf + n, sizeof(buf) - n,
+                      " clips=%llu", (unsigned long long)out_clips);
     sd_journal_print(priority, "%s", buf);
 }
 
@@ -89,11 +98,12 @@ void telemetry_log(telemetry_t *tel,
     bool log_now = false;
 
     if (tel->prev_input_active && !input_active) {
+        uint64_t in_clips = in_proc ? audio_proc_clip_count(in_proc) : 0;
         log_status(LOG_INFO, "input-end",
-                   STAT_INPUT_LEVELS | STAT_INPUT_PATH,
+                   STAT_INPUT_LEVELS | STAT_INPUT_PATH | STAT_IN_CLIPS,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, 0, overruns, underruns);
+                   jitter, late, 0, overruns, underruns, in_clips, 0);
         log_now = true;
     }
     if (tel->prev_output_active && !output_active) {
@@ -101,11 +111,12 @@ void telemetry_log(telemetry_t *tel,
          * exact falling edge of output_active, so it reflects only mid-
          * transmission misses, not post-tx idle pulls. */
         uint64_t tx_silence = jb ? jitter_buffer_latched_silence_count(jb) : 0;
+        uint64_t out_clips = out_proc ? audio_proc_clip_count(out_proc) : 0;
         log_status(LOG_INFO, "output-end",
-                   STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH,
+                   STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, tx_silence, overruns, underruns);
+                   jitter, late, tx_silence, overruns, underruns, 0, out_clips);
         log_now = true;
     }
 
@@ -132,7 +143,7 @@ void telemetry_log(telemetry_t *tel,
                    STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, hb_silence, overruns, underruns);
+                   jitter, late, hb_silence, overruns, underruns, 0, 0);
     } else if (now - tel->last_log_ts >=
                    (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
         tel->last_log_ts = now;
