@@ -60,30 +60,28 @@ Analog device                            AllStarLink server
 ### Build dependencies
 
 ```bash
-sudo apt-get install -y meson ninja-build pkg-config libsystemd-dev libasound2-dev
+sudo apt-get install -y build-essential pkg-config libsystemd-dev libasound2-dev
 ```
 
-The TOML config parser ([tomlc99](https://github.com/cktan/tomlc99)) is vendored and fetched by `scripts/setup.sh` — no separate install needed.
+The TOML config parser ([tomlc99](https://github.com/cktan/tomlc99), MIT) is vendored in the repository — no separate install or download step needed.
 
 ## Building
 
 ```bash
 git clone https://github.com/n0mjs710/rusrp.git
 cd rusrp
-bash scripts/setup.sh          # fetch vendored tomlc99
-meson setup build
-ninja -C build
+make
 ```
 
 To install system-wide (binary, example config, systemd unit):
 
 ```bash
-sudo ninja -C build install
+sudo make install
 ```
 
 ## Configuration
 
-`sudo ninja -C build install` places a starter config at `/etc/rusrp/rusrp.toml` on first install. On upgrades it is left untouched. An annotated reference copy is always at `/etc/rusrp/rusrp.toml.example`.
+`sudo make install` places a starter config at `/etc/rusrp/rusrp.toml` on first install. On upgrades it is left untouched. An annotated reference copy is always at `/etc/rusrp/rusrp.toml.example`.
 
 Key settings:
 
@@ -92,6 +90,7 @@ Key settings:
 | `[usrp]` | `remote_host` | IP of your ASL3 server |
 | `[usrp]` | `remote_port` | chan_usrp port on ASL3 (default 34001) |
 | `[usrp]` | `local_port` | UDP port to bind locally (default 32001) |
+| `[usrp]` | `bind_address` | Local IP to bind the UDP socket (default `"0.0.0.0"` — all interfaces; change only if the SBC has multiple NICs and you need to restrict traffic to one) |
 | `[audio]` | `alsa_device` | ALSA device string — use `plughw:` prefix (e.g. `plughw:1,0`) |
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
 | `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS tones from the analog side) |
@@ -145,7 +144,7 @@ journalctl -u rusrp -f
 ### Testing / CLI
 
 ```bash
-sudo ./build/src/rusrp -c rusrp.toml
+sudo ./build/rusrp -c rusrp.toml
 ```
 
 ## udev rule
@@ -184,9 +183,9 @@ A clean start produces these INFO lines in order:
 
 ```
 rusrp starting, config: /etc/rusrp/rusrp.toml
-alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
-usrp: listening on :32001 → 198.51.100.10:34001
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
+usrp: listening on :32001 → 198.51.100.10:34001
+alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
 rusrp ready
 ```
 
@@ -202,8 +201,8 @@ A status line is written at the end of every transmission, summarising that tran
 Each event type shows only the fields relevant to that path:
 
 ```
-input-end:  in=-12.3pk/-18.0rms dBFS overruns=0
-output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0
+input-end:  in=-12.3pk/-18.0rms dBFS overruns=0 clips=0
+output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0 clips=0
 ```
 
 **`input-end` fields:**
@@ -212,6 +211,7 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0
 |---|---|
 | `in=Xpk/Yrms dBFS` | Peak and RMS level of captured audio, accumulated over the transmission |
 | `overruns=N` | ALSA capture buffer overruns — ALSA filled its ring buffer before rusrp could read it; audio frames were lost |
+| `clips=N` | Samples clipped by the gain stage — non-zero means `input_gain_db` is set too high and audio is distorting |
 
 **`output-end` fields:**
 
@@ -222,13 +222,14 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0
 | `late=N` | USRP packets dropped on arrival (arrived behind the playout cursor or outside the jitter buffer window) |
 | `silence=N` | Playout slots where no frame was available — silence injected; high values with low `late` indicate packet loss before the frame reached us |
 | `underruns=N` | ALSA playback buffer underruns |
+| `clips=N` | Samples clipped by the output gain stage — non-zero means `output_gain_db` is set too high |
 
 ### Reading the numbers
 
 A healthy output-end line looks like this:
 
 ```
-output-end: out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 underruns=0
+output-end: out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 underruns=0 clips=0
 ```
 
 What elevated values mean:
@@ -241,10 +242,20 @@ What elevated values mean:
 | `silence` > 0 with `late` > 0 | Buffer too shallow — frames arrived but too late to use | Increase `jitter_buffer_ms` |
 | `underruns` > 0 | ALSA playback buffer ran dry — CPU couldn't keep up | System load issue; reduce other load on the SBC |
 | `overruns` > 0 (input-end) | ALSA capture buffer filled before rusrp could read it | Same as underruns — system load |
+| `clips` > 0 | Gain stage is clipping — audio is distorting | Reduce `input_gain_db` (for `input-end`) or `output_gain_db` (for `output-end`) |
 
 The `jitter_buffer_ms` setting trades latency for reliability. A deeper buffer absorbs more network jitter but delays the start of each transmission by the same amount. Increase it until `late=0`, then stop.
 
 When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels, `input_active=` and `output_active=` flags, and all stats from both paths — useful to confirm the daemon is alive between transmissions.
+
+### Half-duplex messages
+
+These appear at INFO level when `half_duplex = true` and a transmission arrives while the floor is already held by the other direction:
+
+| Message | Meaning |
+|---|---|
+| `input: blocked (output active)` | An input signal rose while the network is keyed; this input is skipped until the floor is released |
+| `output: blocked (input active)` | A network key event arrived while input is active; this output is skipped until the floor is released |
 
 ### Debug messages
 
