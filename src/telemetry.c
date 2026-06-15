@@ -27,7 +27,7 @@ int telemetry_create(telemetry_t **tel, const config_t *cfg)
 #define STAT_OUTPUT_LEVELS   (1u << 1)  /* out=Xpk/Yrms dBFS */
 #define STAT_ACTIVE_FLAGS    (1u << 2)  /* input_active= output_active= */
 #define STAT_INPUT_PATH      (1u << 3)  /* overruns= */
-#define STAT_OUTPUT_PATH     (1u << 4)  /* jitter= late= silence= network_timeouts= underruns= */
+#define STAT_OUTPUT_PATH     (1u << 4)  /* jitter= late= silence= underruns= */
 
 static void log_status(int priority, const char *label,
                        unsigned int flags,
@@ -36,7 +36,6 @@ static void log_status(int priority, const char *label,
                        bool  input_active, bool output_active,
                        float jitter,
                        uint64_t late, uint64_t silence,
-                       uint64_t net_timeouts,
                        uint64_t overruns, uint64_t underruns)
 {
     char buf[256];
@@ -56,11 +55,10 @@ static void log_status(int priority, const char *label,
                       " overruns=%llu", (unsigned long long)overruns);
     if (flags & STAT_OUTPUT_PATH)
         n += snprintf(buf + n, sizeof(buf) - n,
-                      " jitter=%.1fms late=%llu silence=%llu network_timeouts=%llu underruns=%llu",
+                      " jitter=%.1fms late=%llu silence=%llu underruns=%llu",
                       jitter,
                       (unsigned long long)late,
                       (unsigned long long)silence,
-                      (unsigned long long)net_timeouts,
                       (unsigned long long)underruns);
     sd_journal_print(priority, "%s", buf);
 }
@@ -70,8 +68,7 @@ void telemetry_log(telemetry_t *tel,
                    audio_proc_t          *in_proc,
                    audio_proc_t          *out_proc,
                    const logic_hid_t     *logic,
-                   jitter_buffer_t       *jb,
-                   watchdog_t            *wd)
+                   jitter_buffer_t       *jb)
 {
     uint64_t now = monotonic_ms();
 
@@ -87,7 +84,6 @@ void telemetry_log(telemetry_t *tel,
     bool output_active = logic ? logic_hid_output_active(logic) : false;
     float jitter        = jb   ? jitter_buffer_estimate_ms(jb)    : 0.0f;
     uint64_t late       = jb   ? jitter_buffer_late_count(jb)     : 0;
-    uint64_t net_timeouts = wd  ? watchdog_timeout_count(wd)       : 0;
 
     /* INFO: one summary line on the falling edge of each transmission. */
     bool log_now = false;
@@ -97,7 +93,7 @@ void telemetry_log(telemetry_t *tel,
                    STAT_INPUT_LEVELS | STAT_INPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, 0, net_timeouts, overruns, underruns);
+                   jitter, late, 0, overruns, underruns);
         log_now = true;
     }
     if (tel->prev_output_active && !output_active) {
@@ -109,7 +105,7 @@ void telemetry_log(telemetry_t *tel,
                    STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, tx_silence, net_timeouts, overruns, underruns);
+                   jitter, late, tx_silence, overruns, underruns);
         log_now = true;
     }
 
@@ -136,7 +132,7 @@ void telemetry_log(telemetry_t *tel,
                    STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
-                   jitter, late, hb_silence, net_timeouts, overruns, underruns);
+                   jitter, late, hb_silence, overruns, underruns);
     } else if (now - tel->last_log_ts >=
                    (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
         tel->last_log_ts = now;

@@ -203,7 +203,7 @@ Each event type shows only the fields relevant to that path:
 
 ```
 input-end:  in=-12.3pk/-18.0rms dBFS overruns=0
-output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 network_timeouts=0 underruns=0
+output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0
 ```
 
 **`input-end` fields:**
@@ -221,7 +221,6 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 network_tim
 | `jitter=X ms` | Estimated network jitter at log time |
 | `late=N` | USRP packets dropped on arrival (arrived behind the playout cursor or outside the jitter buffer window) |
 | `silence=N` | Playout slots where no frame was available — silence injected; high values with low `late` indicate packet loss before the frame reached us |
-| `network_timeouts=N` | Times the watchdog forced output_active release because no USRP traffic arrived within `network_timeout_ms` |
 | `underruns=N` | ALSA playback buffer underruns |
 
 ### Reading the numbers
@@ -229,7 +228,7 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 network_tim
 A healthy output-end line looks like this:
 
 ```
-output-end: out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 network_timeouts=0 underruns=0
+output-end: out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 underruns=0
 ```
 
 What elevated values mean:
@@ -240,7 +239,6 @@ What elevated values mean:
 | `late` > 0 | Packets arrived after the playout cursor and were discarded | Increase `jitter_buffer_ms` in 20 ms steps until `late` reaches zero |
 | `silence` > 0 with `late` = 0 | The buffer ran dry — packets simply stopped arriving (packet loss or a gap from Asterisk) | A consistent 6–8 frames per transmission is a known Asterisk characteristic and is benign; values above ~20 suggest packet loss on the network path; increasing `jitter_buffer_ms` will not help when `late=0` |
 | `silence` > 0 with `late` > 0 | Buffer too shallow — frames arrived but too late to use | Increase `jitter_buffer_ms` |
-| `network_timeouts` > 0 | ASL stopped sending entirely mid-transmission; watchdog fired | One or two is normal during session startup or teardown; frequent occurrences suggest a network or ASL configuration problem; try raising `network_timeout_ms` |
 | `underruns` > 0 | ALSA playback buffer ran dry — CPU couldn't keep up | System load issue; reduce other load on the SBC |
 | `overruns` > 0 (input-end) | ALSA capture buffer filled before rusrp could read it | Same as underruns — system load |
 

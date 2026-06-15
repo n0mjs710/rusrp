@@ -93,16 +93,18 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         }
     }
 
+    /* Snapshot trim state BEFORE the falling edge so drain-complete can detect
+     * the TRIM_ACTIVE→TRIM_IDLE transition on the same frame that tx_end fires.
+     * audio_trim_tx_end() sets TRIM_IDLE immediately (no multi-frame drain), so
+     * trim_was_active must be captured here or the transition is invisible. */
+    bool trim_was_active = audio_trim_active(ctx->in_trim);
+
     /* Falling edge: log, begin trailing drain (UNKEY sent after drain). */
     if (!keyed && was_keyed && ctx->floor_held) {
         if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "input: ended");
         audio_trim_tx_end(ctx->in_trim);
     }
-
-    /* Remember whether trim was active before processing this frame so we
-     * can detect the drain-complete falling edge below. */
-    bool trim_was_active = audio_trim_active(ctx->in_trim);
 
     /* Route audio through the trim module.
      * During leading window: outputs silence.
@@ -329,7 +331,7 @@ int main(int argc, char *argv[])
     /* ── main loop ── */
     while (!atomic_load(&g_stop)) {
         sleep(1);
-        telemetry_log(tel, alsa, in_proc, out_proc, logic, jb, wd);
+        telemetry_log(tel, alsa, in_proc, out_proc, logic, jb);
     }
 
     sd_journal_print(LOG_INFO, "rusrp stopping");
