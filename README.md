@@ -149,7 +149,7 @@ sudo ./build/rusrp -c rusrp.toml
 
 The CM119A exposes VOLDN as a keyboard key. Without a udev rule, the kernel treats a continuous carrier (COS active) as a held KEY_VOLUMEDOWN and will silently drain system volume over time.
 
-The rule (`udev/90-cm119a.rules`) is installed automatically by `sudo ninja -C build install`. After install or after replugging the device, reload:
+The rule (`udev/90-cm119a.rules`) is installed automatically by `sudo make install`. After install or after replugging the device, reload:
 
 ```bash
 sudo udevadm control --reload && sudo udevadm trigger
