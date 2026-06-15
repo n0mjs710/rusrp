@@ -1,7 +1,5 @@
 # rusrp — Remote USRP
 
-> **Beta — believed working, still in testing.** Basic operation in both directions appears functional, but this has not yet been tested against a live repeater. Behaviour may change without notice. We are not accepting bug reports at this stage. If you're experimenting, we'd love to hear what you find (just not as issues in github); and please don't deploy this on a live repeater you depend on.
-
 A lightweight audio/control terminal for amateur radio repeater linking. Runs on Linux SBCs and connects an analog repeater controller to an [AllStarLink (ASL3)](https://www.allstarlink.org/) server using the USRP protocol over UDP.
 
 One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session.
