@@ -192,14 +192,15 @@ A status line is written at the end of every transmission, summarising that tran
 Each event type shows only the fields relevant to that path:
 
 ```
-input-end:  in=-12.3pk/-18.0rms dBFS overruns=0 clips=0
-output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0 clips=0
+input-end:  dur=3.0s in=-12.3pk/-18.0rms dBFS overruns=0 clips=0
+output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0 clips=0
 ```
 
 **`input-end` fields:**
 
 | Field | Meaning |
 |---|---|
+| `dur=X.Xs` | Transmission duration in seconds |
 | `in=Xpk/Yrms dBFS` | Peak and RMS level of captured audio, accumulated over the transmission |
 | `overruns=N` | ALSA capture buffer overruns — ALSA filled its ring buffer before rusrp could read it; audio frames were lost |
 | `clips=N` | Samples clipped by the gain stage — non-zero means `input_gain_db` is set too high and audio is distorting |
@@ -208,6 +209,7 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0
 
 | Field | Meaning |
 |---|---|
+| `dur=X.Xs` | Transmission duration in seconds |
 | `out=Xpk/Yrms dBFS` | Peak and RMS level of audio sent to the output device, accumulated over the transmission |
 | `jitter=X ms` | Estimated network jitter at log time |
 | `late=N` | USRP packets dropped on arrival (arrived behind the playout cursor or outside the jitter buffer window) |
@@ -220,7 +222,7 @@ output-end: out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0
 A healthy output-end line looks like this:
 
 ```
-output-end: out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 underruns=0 clips=0
+output-end: dur=3.0s out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 underruns=0 clips=0
 ```
 
 What elevated values mean:

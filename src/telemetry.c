@@ -10,6 +10,8 @@ struct telemetry {
     uint64_t        last_log_ts;
     bool            prev_input_active;
     bool            prev_output_active;
+    uint64_t        input_tx_start_ts;
+    uint64_t        output_tx_start_ts;
 };
 
 int telemetry_create(telemetry_t **tel, const config_t *cfg)
@@ -23,16 +25,18 @@ int telemetry_create(telemetry_t **tel, const config_t *cfg)
 }
 
 /* Flags controlling which fields appear in a log_status line. */
-#define STAT_INPUT_LEVELS    (1u << 0)  /* in=Xpk/Yrms dBFS */
-#define STAT_OUTPUT_LEVELS   (1u << 1)  /* out=Xpk/Yrms dBFS */
-#define STAT_ACTIVE_FLAGS    (1u << 2)  /* input_active= output_active= */
-#define STAT_INPUT_PATH      (1u << 3)  /* overruns= */
-#define STAT_OUTPUT_PATH     (1u << 4)  /* jitter= late= silence= underruns= */
-#define STAT_IN_CLIPS        (1u << 5)  /* clips= (input path) */
-#define STAT_OUT_CLIPS       (1u << 6)  /* clips= (output path) */
+#define STAT_DURATION        (1u << 0)  /* dur=Xms */
+#define STAT_INPUT_LEVELS    (1u << 1)  /* in=Xpk/Yrms dBFS */
+#define STAT_OUTPUT_LEVELS   (1u << 2)  /* out=Xpk/Yrms dBFS */
+#define STAT_ACTIVE_FLAGS    (1u << 3)  /* input_active= output_active= */
+#define STAT_INPUT_PATH      (1u << 4)  /* overruns= */
+#define STAT_OUTPUT_PATH     (1u << 5)  /* jitter= late= silence= underruns= */
+#define STAT_IN_CLIPS        (1u << 6)  /* clips= (input path) */
+#define STAT_OUT_CLIPS       (1u << 7)  /* clips= (output path) */
 
 static void log_status(int priority, const char *label,
                        unsigned int flags,
+                       uint64_t dur_ms,
                        float in_peak,  float in_rms,
                        float out_peak, float out_rms,
                        bool  input_active, bool output_active,
@@ -41,8 +45,11 @@ static void log_status(int priority, const char *label,
                        uint64_t overruns, uint64_t underruns,
                        uint64_t in_clips, uint64_t out_clips)
 {
-    char buf[320];
+    char buf[384];
     int n = snprintf(buf, sizeof(buf), "%s:", label);
+    if (flags & STAT_DURATION)
+        n += snprintf(buf + n, sizeof(buf) - n,
+                      " dur=%.1fs", (double)dur_ms / 1000.0);
     if (flags & STAT_INPUT_LEVELS)
         n += snprintf(buf + n, sizeof(buf) - n,
                       " in=%.1fpk/%.1frms dBFS", in_peak, in_rms);
@@ -94,26 +101,31 @@ void telemetry_log(telemetry_t *tel,
     float jitter        = jb   ? jitter_buffer_estimate_ms(jb)    : 0.0f;
     uint64_t late       = jb   ? jitter_buffer_late_count(jb)     : 0;
 
+    /* Detect rising edges to record transmission start times. */
+    if (!tel->prev_input_active  && input_active)  tel->input_tx_start_ts  = now;
+    if (!tel->prev_output_active && output_active) tel->output_tx_start_ts = now;
+
     /* INFO: one summary line on the falling edge of each transmission. */
     bool log_now = false;
 
     if (tel->prev_input_active && !input_active) {
+        uint64_t dur_ms   = tel->input_tx_start_ts ? (now - tel->input_tx_start_ts) : 0;
         uint64_t in_clips = in_proc ? audio_proc_clip_count(in_proc) : 0;
         log_status(LOG_INFO, "input-end",
-                   STAT_INPUT_LEVELS | STAT_INPUT_PATH | STAT_IN_CLIPS,
+                   STAT_DURATION | STAT_INPUT_LEVELS | STAT_INPUT_PATH | STAT_IN_CLIPS,
+                   dur_ms,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
                    jitter, late, 0, overruns, underruns, in_clips, 0);
         log_now = true;
     }
     if (tel->prev_output_active && !output_active) {
-        /* Read the latched silence count — set by the playback thread at the
-         * exact falling edge of output_active, so it reflects only mid-
-         * transmission misses, not post-tx idle pulls. */
+        uint64_t dur_ms     = tel->output_tx_start_ts ? (now - tel->output_tx_start_ts) : 0;
         uint64_t tx_silence = jb ? jitter_buffer_latched_silence_count(jb) : 0;
-        uint64_t out_clips = out_proc ? audio_proc_clip_count(out_proc) : 0;
+        uint64_t out_clips  = out_proc ? audio_proc_clip_count(out_proc) : 0;
         log_status(LOG_INFO, "output-end",
-                   STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
+                   STAT_DURATION | STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
+                   dur_ms,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
                    jitter, late, tx_silence, overruns, underruns, 0, out_clips);
@@ -141,6 +153,7 @@ void telemetry_log(telemetry_t *tel,
         log_status(LOG_DEBUG, "heartbeat",
                    STAT_INPUT_LEVELS | STAT_OUTPUT_LEVELS | STAT_ACTIVE_FLAGS |
                    STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
+                   0,
                    in_peak, in_rms, out_peak, out_rms,
                    input_active, output_active,
                    jitter, late, hb_silence, overruns, underruns, 0, 0);
