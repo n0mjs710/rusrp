@@ -12,29 +12,43 @@ struct watchdog {
     const config_t  *cfg;
     logic_hid_t     *logic;
     jitter_buffer_t *jb;
-    audio_alsa_t    *alsa;   /* set via watchdog_set_alsa after ALSA init */
+    audio_alsa_t    *alsa;
     pthread_t        thread;
     atomic_bool      stop;
     atomic_bool      keyed;
     atomic_uint_least64_t last_packet_ts;
-    atomic_uint_least64_t key_end_ts;    /* monotonic_ms when unkey was detected */
-    atomic_uint_least64_t ptt_ready_ts;  /* monotonic_ms when to fire PTT (0=none) */
+    atomic_uint_least64_t key_end_ts;
+    atomic_uint_least64_t ptt_ready_ts;
+    atomic_uint_least64_t pending_unkey_ts;
     uint64_t         startup_end_ts;
-    atomic_int      *floor;              /* shared half-duplex floor state */
-    atomic_bool      output_floor_held;  /* true if output path currently owns the floor */
+    atomic_int      *floor;
+    atomic_bool      output_floor_held;
 };
+
+static void do_unkey(watchdog_t *wd)
+{
+    atomic_store(&wd->ptt_ready_ts, 0);
+    jitter_buffer_flush(wd->jb);
+    if (atomic_load(&wd->output_floor_held)) {
+        if (wd->alsa)
+            audio_alsa_request_drain(wd->alsa);
+        atomic_store(&wd->key_end_ts, monotonic_ms());
+        if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
+            sd_journal_print(LOG_DEBUG, "output: holding %u ms for buffer drain",
+                             wd->cfg->watchdog.output_active_tail_ms);
+    }
+}
 
 static void force_unkey(watchdog_t *wd, const char *reason)
 {
     bool was_keyed = atomic_exchange(&wd->keyed, false);
-    atomic_store(&wd->ptt_ready_ts, 0);   /* cancel any pending deferred PTT */
+    atomic_store(&wd->ptt_ready_ts, 0);
+    atomic_store(&wd->pending_unkey_ts, 0);
     if (was_keyed) {
         sd_journal_print(LOG_WARNING, "output: forced release: %s", reason);
         logic_hid_set_output(wd->logic, false);
         jitter_buffer_flush(wd->jb);
     }
-    /* Release floor regardless — avoids a stuck floor if force_unkey fires
-     * while we hold it (e.g. network timeout during half-duplex output). */
     if (wd->cfg->logic.half_duplex &&
         atomic_exchange(&wd->output_floor_held, false)) {
         atomic_store_explicit(wd->floor, FLOOR_IDLE, memory_order_release);
@@ -57,6 +71,15 @@ static void *watchdog_thread_fn(void *arg)
         if (now < wd->startup_end_ts) {
             logic_hid_set_output(wd->logic, false);
             continue;
+        }
+
+        /* Debounced unkey: fire when the timer expires and keyed is still false. */
+        uint64_t pending_unkey = atomic_load_explicit(&wd->pending_unkey_ts,
+                                                      memory_order_relaxed);
+        if (pending_unkey > 0 && now >= pending_unkey) {
+            atomic_store(&wd->pending_unkey_ts, 0);
+            if (!atomic_load_explicit(&wd->keyed, memory_order_relaxed))
+                do_unkey(wd);
         }
 
         /* Deferred PTT: assert after jitter_buffer_ms so audio is buffered
@@ -121,6 +144,7 @@ int watchdog_create(watchdog_t **wd, const config_t *cfg,
     atomic_init(&self->last_packet_ts,     0);
     atomic_init(&self->key_end_ts,         0);
     atomic_init(&self->ptt_ready_ts,       0);
+    atomic_init(&self->pending_unkey_ts,   0);
     atomic_init(&self->output_floor_held,  false);
 
     if (pthread_create(&self->thread, NULL, watchdog_thread_fn, self) != 0) {
@@ -147,10 +171,7 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
 {
     bool prev = atomic_exchange(&wd->keyed, keyed);
     if (keyed && !prev) {
-        /* KEY: flush jitter buffer so it re-seeds to the new transmission's
-         * sequence numbers (remote resets seq to 0 each transmission).
-         * Defer output by jitter_buffer_ms so the buffer is full and audio
-         * plays the moment the output keys up. */
+        atomic_store(&wd->pending_unkey_ts, 0);
         jitter_buffer_flush(wd->jb);
         atomic_store(&wd->key_end_ts, 0);
 
@@ -178,23 +199,12 @@ void watchdog_key_event(watchdog_t *wd, bool keyed)
                                  wd->cfg->network.jitter_buffer_ms);
         }
     } else if (!keyed && prev) {
-        /* UNKEY: cancel pending output, flush buffers to prevent stale audio
-         * bleeding into the next transmission, then hold output while the
-         * audio buffer drains. */
-        atomic_store(&wd->ptt_ready_ts, 0);
-        jitter_buffer_flush(wd->jb);
-        if (atomic_load(&wd->output_floor_held)) {
-            /* Only drain and start tail timer if we actually keyed output. */
-            if (wd->alsa)
-                audio_alsa_request_drain(wd->alsa);
-            atomic_store(&wd->key_end_ts, monotonic_ms());
-            if (wd->cfg->logging.level <= LOG_LEVEL_DEBUG)
-                sd_journal_print(LOG_DEBUG, "output: holding %u ms for buffer drain",
-                                 wd->cfg->watchdog.output_active_tail_ms);
-            /* Floor released in watchdog_thread_fn when tail timer expires. */
+        if (wd->cfg->watchdog.unkey_debounce_ms > 0) {
+            atomic_store(&wd->pending_unkey_ts,
+                         monotonic_ms() + wd->cfg->watchdog.unkey_debounce_ms);
+        } else {
+            do_unkey(wd);
         }
-        /* When blocked (output_floor_held=false), key_end_ts stays 0 and
-         * the floor needs no release — we never claimed it. */
     }
 }
 

@@ -11,17 +11,8 @@ output_gain_db  = 0.0
 input_highpass  = false         # 250 Hz HPF — blocks CTCSS/DCS
 output_highpass = false
 
-# Leading trim: silence the first N ms after the transmission rises.
-# The channel is captured immediately; this just mutes mic click or CTCSS bleedthrough.
-# Output leading trim gives CTCSS decoders (~100 ms) time to open before voice arrives.
-input_leading_trim_ms   = 0     # 0–260 ms, rounded to nearest 20 ms frame
-output_leading_trim_ms  = 0
-
-# Trailing trim: drop the last N ms before the transmission falls.
-# Audio is time-shifted through a FIFO so the last N ms are never forwarded.
-# Removes squelch-tail noise from the input stream; removes output burst on PTT drop.
-input_trailing_trim_ms  = 0     # 0–260 ms, rounded to nearest 20 ms frame
-output_trailing_trim_ms = 0
+input_leading_trim_ms  = 0      # 0–260 ms, rounded to nearest 20 ms frame
+output_leading_trim_ms = 0
 
 [logic]
 hid_device         = "/dev/hidraw0"
@@ -37,6 +28,7 @@ jitter_buffer_ms = 60           # 40–250 ms (rounds up to nearest 20 ms frame)
 network_timeout_ms        = 500   # no USRP traffic → force unkey
 output_active_tail_ms     = 100   # hold output_active after UNKEY
 startup_output_inhibit_ms = 2000  # suppress output at boot
+unkey_debounce_ms         = 0     # wait N ms before acting on unkey; absorbs brief keyup=0 gaps
 
 [logging]
 level               = "info"    # debug, info, warn, error

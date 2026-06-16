@@ -89,23 +89,21 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         }
     }
 
-    /* Snapshot trim state BEFORE the falling edge so drain-complete can detect
-     * the TRIM_ACTIVE→TRIM_IDLE transition on the same frame that tx_end fires.
-     * audio_trim_tx_end() sets TRIM_IDLE immediately (no multi-frame drain), so
-     * trim_was_active must be captured here or the transition is invisible. */
-    bool trim_was_active = audio_trim_active(ctx->in_trim);
-
-    /* Falling edge: log, begin trailing drain (UNKEY sent after drain). */
+    /* Falling edge: end trim, send UNKEY, release floor. */
     if (!keyed && was_keyed && ctx->floor_held) {
         if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "input: ended");
         audio_trim_tx_end(ctx->in_trim);
+        seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
+                                                   memory_order_relaxed);
+        usrp_build_key(pkt, seq, 0);
+        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        if (ctx->cfg->logic.half_duplex) {
+            atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
+            ctx->floor_held = false;
+        }
     }
 
-    /* Route audio through the trim module.
-     * During leading window: outputs silence.
-     * During trailing drain: outputs buffered pre-edge frames (in ignored).
-     * Returns false while the FIFO is filling or the module is idle. */
     int16_t trimmed[USRP_AUDIO_FRAMES];
     bool has_frame = audio_trim_process(ctx->in_trim,
                                         keyed ? frame : NULL,
@@ -115,18 +113,6 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
                                                    memory_order_relaxed);
         usrp_build_voice(pkt, seq, 1, trimmed);
         usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
-    }
-
-    /* Drain complete: send UNKEY on the falling edge of trim_active. */
-    if (trim_was_active && !audio_trim_active(ctx->in_trim)) {
-        seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
-                                                   memory_order_relaxed);
-        usrp_build_key(pkt, seq, 0);
-        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
-        if (ctx->cfg->logic.half_duplex && ctx->floor_held) {
-            atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
-            ctx->floor_held = false;
-        }
     }
 }
 
@@ -273,11 +259,9 @@ int main(int argc, char *argv[])
 
     /* ── init: audio trim ── */
     if (audio_trim_create(&in_trim,
-                          cfg.audio.input_leading_trim_ms  / 20,
-                          cfg.audio.input_trailing_trim_ms / 20) != 0) goto fail;
+                          cfg.audio.input_leading_trim_ms / 20) != 0) goto fail;
     if (audio_trim_create(&out_trim,
-                          cfg.audio.output_leading_trim_ms  / 20,
-                          cfg.audio.output_trailing_trim_ms / 20) != 0) goto fail;
+                          cfg.audio.output_leading_trim_ms / 20) != 0) goto fail;
 
     /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};

@@ -20,10 +20,8 @@ void config_defaults(config_t *cfg)
     cfg->audio.output_gain_db   = 0.0f;
     cfg->audio.input_highpass   = false;
     cfg->audio.output_highpass  = false;
-    cfg->audio.input_leading_trim_ms   = 0;
-    cfg->audio.input_trailing_trim_ms  = 0;
-    cfg->audio.output_leading_trim_ms  = 0;
-    cfg->audio.output_trailing_trim_ms = 0;
+    cfg->audio.input_leading_trim_ms  = 0;
+    cfg->audio.output_leading_trim_ms = 0;
 
     strncpy(cfg->logic.hid_device, "/dev/hidraw0", sizeof(cfg->logic.hid_device) - 1);
     cfg->logic.output_active_gpio = 3;
@@ -35,6 +33,7 @@ void config_defaults(config_t *cfg)
     cfg->watchdog.network_timeout_ms        = 500;
     cfg->watchdog.output_active_tail_ms     = 100;
     cfg->watchdog.startup_output_inhibit_ms = 2000;
+    cfg->watchdog.unkey_debounce_ms         = 0;
 
     cfg->logging.level               = LOG_LEVEL_INFO;
     cfg->logging.status_interval_sec = 10;
@@ -181,21 +180,14 @@ int config_load(config_t *cfg, const char *path)
         read_float(t, "output_gain_db",  &cfg->audio.output_gain_db);
         read_bool(t,  "input_highpass",  &cfg->audio.input_highpass);
         read_bool(t,  "output_highpass", &cfg->audio.output_highpass);
-        read_uint(t,  "input_leading_trim_ms",   &cfg->audio.input_leading_trim_ms);
-        read_uint(t,  "input_trailing_trim_ms",  &cfg->audio.input_trailing_trim_ms);
-        read_uint(t,  "output_leading_trim_ms",  &cfg->audio.output_leading_trim_ms);
-        read_uint(t,  "output_trailing_trim_ms", &cfg->audio.output_trailing_trim_ms);
+        read_uint(t,  "input_leading_trim_ms",  &cfg->audio.input_leading_trim_ms);
+        read_uint(t,  "output_leading_trim_ms", &cfg->audio.output_leading_trim_ms);
     }
 
-    /* Round trim values to 20 ms frame boundaries. */
-    cfg->audio.input_leading_trim_ms   = round_trim_ms(cfg->audio.input_leading_trim_ms,
-                                                        "audio.input_leading_trim_ms");
-    cfg->audio.input_trailing_trim_ms  = round_trim_ms(cfg->audio.input_trailing_trim_ms,
-                                                        "audio.input_trailing_trim_ms");
-    cfg->audio.output_leading_trim_ms  = round_trim_ms(cfg->audio.output_leading_trim_ms,
-                                                        "audio.output_leading_trim_ms");
-    cfg->audio.output_trailing_trim_ms = round_trim_ms(cfg->audio.output_trailing_trim_ms,
-                                                        "audio.output_trailing_trim_ms");
+    cfg->audio.input_leading_trim_ms  = round_trim_ms(cfg->audio.input_leading_trim_ms,
+                                                       "audio.input_leading_trim_ms");
+    cfg->audio.output_leading_trim_ms = round_trim_ms(cfg->audio.output_leading_trim_ms,
+                                                       "audio.output_leading_trim_ms");
 
     if ((t = toml_table_in(root, "logic"))) {
         read_str(t,  "hid_device",         cfg->logic.hid_device,
@@ -213,6 +205,7 @@ int config_load(config_t *cfg, const char *path)
         read_uint(t, "network_timeout_ms",        &cfg->watchdog.network_timeout_ms);
         read_uint(t, "output_active_tail_ms",     &cfg->watchdog.output_active_tail_ms);
         read_uint(t, "startup_output_inhibit_ms", &cfg->watchdog.startup_output_inhibit_ms);
+        read_uint(t, "unkey_debounce_ms",         &cfg->watchdog.unkey_debounce_ms);
     }
 
     if ((t = toml_table_in(root, "logging"))) {

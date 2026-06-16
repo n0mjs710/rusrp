@@ -16,10 +16,8 @@ typedef struct {
     float output_gain_db;
     bool  input_highpass;
     bool  output_highpass;
-    unsigned int input_leading_trim_ms;   /* silence start of input tx; 0–260, rounded to 20 ms */
-    unsigned int input_trailing_trim_ms;  /* trim end of input tx via delay; 0–260, rounded to 20 ms */
-    unsigned int output_leading_trim_ms;  /* silence start of output tx; 0–260, rounded to 20 ms */
-    unsigned int output_trailing_trim_ms; /* trim end of output tx via delay; 0–260, rounded to 20 ms */
+    unsigned int input_leading_trim_ms;
+    unsigned int output_leading_trim_ms;
 } config_audio_t;
 
 typedef struct {
@@ -35,9 +33,10 @@ typedef struct {
 } config_network_t;
 
 typedef struct {
-    unsigned int network_timeout_ms;         /* no USRP traffic → force unkey */
-    unsigned int output_active_tail_ms;      /* hold output_active after UNKEY */
-    unsigned int startup_output_inhibit_ms;  /* suppress output_active at boot */
+    unsigned int network_timeout_ms;
+    unsigned int output_active_tail_ms;
+    unsigned int startup_output_inhibit_ms;
+    unsigned int unkey_debounce_ms;
 } config_watchdog_t;
 
 typedef enum {
