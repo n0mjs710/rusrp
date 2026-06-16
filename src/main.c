@@ -39,6 +39,8 @@ typedef struct {
     audio_proc_t            *in_proc;
     audio_trim_t            *in_trim;
     logic_hid_t             *logic;
+    audio_alsa_t            *alsa;
+    telemetry_t             *tel;
     atomic_uint_fast32_t     tx_seq;
     bool                     prev_keyed;
     atomic_int              *floor;
@@ -79,6 +81,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         }
         ctx->floor_held = proceed;
         if (proceed) {
+            telemetry_input_start(ctx->tel);
             if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
                 sd_journal_print(LOG_DEBUG, "input: active");
             audio_trim_tx_start(ctx->in_trim);
@@ -98,6 +101,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 0);
         usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        telemetry_input_end(ctx->tel, ctx->alsa, ctx->in_proc);
         if (ctx->cfg->logic.half_duplex) {
             atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
             ctx->floor_held = false;
@@ -142,6 +146,7 @@ typedef struct {
     audio_trim_t         *out_trim;
     jitter_buffer_t      *jb;
     const logic_hid_t    *logic;
+    telemetry_t          *tel;
     atomic_bool          *stop;
 } pb_ctx_t;
 
@@ -163,12 +168,12 @@ static void *playback_thread_fn(void *arg)
         /* Detect transitions to drive the trim module. */
         if (output_active && !prev_output_active) {
             audio_trim_tx_start(ctx->out_trim);
-            /* Reset per-transmission silence counter so output-end reflects
-             * only missed frames from this transmission, not idle accumulation. */
             jitter_buffer_reset_silence_count(ctx->jb);
+            telemetry_output_start(ctx->tel);
         } else if (!output_active && prev_output_active) {
             audio_trim_tx_end(ctx->out_trim);
             jitter_buffer_latch_silence(ctx->jb);
+            telemetry_output_end(ctx->tel, ctx->alsa, ctx->out_proc, ctx->jb);
         }
         prev_output_active = output_active;
 
@@ -263,6 +268,9 @@ int main(int argc, char *argv[])
     if (audio_trim_create(&out_trim,
                           cfg.audio.output_leading_trim_ms / 20) != 0) goto fail;
 
+    /* ── init: telemetry (needed by capture callback and playback thread) ── */
+    if (telemetry_create(&tel, &cfg) != 0) goto fail;
+
     /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};
     atomic_init(&tx_ctx.tx_seq, 0);
@@ -271,11 +279,13 @@ int main(int argc, char *argv[])
     tx_ctx.in_proc     = in_proc;
     tx_ctx.in_trim     = in_trim;
     tx_ctx.logic       = logic;
+    tx_ctx.tel         = tel;
     tx_ctx.floor       = &g_floor;
     tx_ctx.floor_held  = false;
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
         goto fail;
+    tx_ctx.alsa = alsa;
     watchdog_set_alsa(wd, alsa);
 
     /* ── init: playback thread ── */
@@ -285,6 +295,7 @@ int main(int argc, char *argv[])
     pb_ctx.out_trim = out_trim;
     pb_ctx.jb       = jb;
     pb_ctx.logic    = logic;
+    pb_ctx.tel      = tel;
     pb_ctx.stop     = &g_stop;
 
     if (pthread_create(&pb_thread, NULL, playback_thread_fn, &pb_ctx) != 0) {
@@ -292,9 +303,6 @@ int main(int argc, char *argv[])
         goto fail;
     }
     pb_started = true;
-
-    /* ── init: telemetry ── */
-    if (telemetry_create(&tel, &cfg) != 0) goto fail;
 
     /* ── ready ── */
     sd_notify(0, "READY=1");

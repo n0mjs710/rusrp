@@ -8,8 +8,6 @@
 struct telemetry {
     const config_t *cfg;
     uint64_t        last_log_ts;
-    bool            prev_input_active;
-    bool            prev_output_active;
     uint64_t        input_tx_start_ts;
     uint64_t        output_tx_start_ts;
 };
@@ -79,6 +77,54 @@ static void log_status(int priority, const char *label,
     sd_journal_print(priority, "%s", buf);
 }
 
+void telemetry_input_start(telemetry_t *tel)
+{
+    tel->input_tx_start_ts = monotonic_ms();
+}
+
+void telemetry_input_end(telemetry_t *tel, audio_alsa_t *alsa, audio_proc_t *in_proc)
+{
+    uint64_t now    = monotonic_ms();
+    uint64_t dur_ms = tel->input_tx_start_ts ? (now - tel->input_tx_start_ts) : 0;
+    float in_peak = -96.0f, in_rms = -96.0f;
+    if (in_proc) audio_proc_get_levels(in_proc, &in_peak, &in_rms);
+    uint64_t overruns = 0, underruns = 0;
+    if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
+    uint64_t in_clips = in_proc ? audio_proc_clip_count(in_proc) : 0;
+    log_status(LOG_INFO, "input-end",
+               STAT_DURATION | STAT_INPUT_LEVELS | STAT_INPUT_PATH | STAT_IN_CLIPS,
+               dur_ms,
+               in_peak, in_rms, 0.0f, 0.0f,
+               false, false, 0.0f, 0, 0, overruns, 0, in_clips, 0);
+    if (in_proc) audio_proc_reset_levels(in_proc);
+}
+
+void telemetry_output_start(telemetry_t *tel)
+{
+    tel->output_tx_start_ts = monotonic_ms();
+}
+
+void telemetry_output_end(telemetry_t *tel, audio_alsa_t *alsa,
+                          audio_proc_t *out_proc, jitter_buffer_t *jb)
+{
+    uint64_t now    = monotonic_ms();
+    uint64_t dur_ms = tel->output_tx_start_ts ? (now - tel->output_tx_start_ts) : 0;
+    float out_peak = -96.0f, out_rms = -96.0f;
+    if (out_proc) audio_proc_get_levels(out_proc, &out_peak, &out_rms);
+    uint64_t overruns = 0, underruns = 0;
+    if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
+    uint64_t out_clips  = out_proc ? audio_proc_clip_count(out_proc)           : 0;
+    float    jitter     = jb       ? jitter_buffer_estimate_ms(jb)             : 0.0f;
+    uint64_t late       = jb       ? jitter_buffer_late_count(jb)              : 0;
+    uint64_t tx_silence = jb       ? jitter_buffer_latched_silence_count(jb)   : 0;
+    log_status(LOG_INFO, "output-end",
+               STAT_DURATION | STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
+               dur_ms,
+               0.0f, 0.0f, out_peak, out_rms,
+               false, false, jitter, late, tx_silence, 0, underruns, 0, out_clips);
+    if (out_proc) audio_proc_reset_levels(out_proc);
+}
+
 void telemetry_log(telemetry_t *tel,
                    audio_alsa_t          *alsa,
                    audio_proc_t          *in_proc,
@@ -87,9 +133,13 @@ void telemetry_log(telemetry_t *tel,
                    jitter_buffer_t       *jb)
 {
     uint64_t now = monotonic_ms();
+    if (now - tel->last_log_ts <
+            (uint64_t)tel->cfg->logging.status_interval_sec * 1000u)
+        return;
+    tel->last_log_ts = now;
 
-    uint64_t overruns = 0, underruns = 0;
-    if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
+    if (tel->cfg->logging.level > LOG_LEVEL_DEBUG)
+        return;
 
     float in_peak = -96.0f, in_rms = -96.0f;
     float out_peak = -96.0f, out_rms = -96.0f;
@@ -98,69 +148,19 @@ void telemetry_log(telemetry_t *tel,
 
     bool input_active  = logic ? logic_hid_input_active(logic)  : false;
     bool output_active = logic ? logic_hid_output_active(logic) : false;
-    float jitter        = jb   ? jitter_buffer_estimate_ms(jb)    : 0.0f;
-    uint64_t late       = jb   ? jitter_buffer_late_count(jb)     : 0;
+    float    jitter     = jb ? jitter_buffer_estimate_ms(jb) : 0.0f;
+    uint64_t late       = jb ? jitter_buffer_late_count(jb)  : 0;
+    uint64_t hb_silence = jb ? jitter_buffer_hb_silence_count(jb) : 0;
+    uint64_t overruns = 0, underruns = 0;
+    if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
 
-    /* Detect rising edges to record transmission start times. */
-    if (!tel->prev_input_active  && input_active)  tel->input_tx_start_ts  = now;
-    if (!tel->prev_output_active && output_active) tel->output_tx_start_ts = now;
-
-    /* INFO: one summary line on the falling edge of each transmission. */
-    bool log_now = false;
-
-    if (tel->prev_input_active && !input_active) {
-        uint64_t dur_ms   = tel->input_tx_start_ts ? (now - tel->input_tx_start_ts) : 0;
-        uint64_t in_clips = in_proc ? audio_proc_clip_count(in_proc) : 0;
-        log_status(LOG_INFO, "input-end",
-                   STAT_DURATION | STAT_INPUT_LEVELS | STAT_INPUT_PATH | STAT_IN_CLIPS,
-                   dur_ms,
-                   in_peak, in_rms, out_peak, out_rms,
-                   input_active, output_active,
-                   jitter, late, 0, overruns, underruns, in_clips, 0);
-        log_now = true;
-    }
-    if (tel->prev_output_active && !output_active) {
-        uint64_t dur_ms     = tel->output_tx_start_ts ? (now - tel->output_tx_start_ts) : 0;
-        uint64_t tx_silence = jb ? jitter_buffer_latched_silence_count(jb) : 0;
-        uint64_t out_clips  = out_proc ? audio_proc_clip_count(out_proc) : 0;
-        log_status(LOG_INFO, "output-end",
-                   STAT_DURATION | STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
-                   dur_ms,
-                   in_peak, in_rms, out_peak, out_rms,
-                   input_active, output_active,
-                   jitter, late, tx_silence, overruns, underruns, 0, out_clips);
-        log_now = true;
-    }
-
-    /* Reset level accumulators after an end-of-transmission log so the
-     * next transmission's stats reflect only that transmission. */
-    if (log_now) {
-        if (in_proc)  audio_proc_reset_levels(in_proc);
-        if (out_proc) audio_proc_reset_levels(out_proc);
-    }
-
-    tel->prev_input_active  = input_active;
-    tel->prev_output_active = output_active;
-
-    /* DEBUG: periodic heartbeat — only when level=debug is configured. */
-    if (tel->cfg->logging.level <= LOG_LEVEL_DEBUG &&
-        now - tel->last_log_ts >=
-            (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
-        tel->last_log_ts = now;
-        /* hb_silence accumulates mid-tx missed frames across all transmissions
-         * since the last heartbeat — excludes inter-transmission idle pulls. */
-        uint64_t hb_silence = jb ? jitter_buffer_hb_silence_count(jb) : 0;
-        log_status(LOG_DEBUG, "heartbeat",
-                   STAT_INPUT_LEVELS | STAT_OUTPUT_LEVELS | STAT_ACTIVE_FLAGS |
-                   STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
-                   0,
-                   in_peak, in_rms, out_peak, out_rms,
-                   input_active, output_active,
-                   jitter, late, hb_silence, overruns, underruns, 0, 0);
-    } else if (now - tel->last_log_ts >=
-                   (uint64_t)tel->cfg->logging.status_interval_sec * 1000u) {
-        tel->last_log_ts = now;
-    }
+    log_status(LOG_DEBUG, "heartbeat",
+               STAT_INPUT_LEVELS | STAT_OUTPUT_LEVELS | STAT_ACTIVE_FLAGS |
+               STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
+               0,
+               in_peak, in_rms, out_peak, out_rms,
+               input_active, output_active,
+               jitter, late, hb_silence, overruns, underruns, 0, 0);
 }
 
 void telemetry_destroy(telemetry_t *tel)
