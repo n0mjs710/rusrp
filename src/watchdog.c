@@ -1,7 +1,6 @@
 #include "watchdog.h"
 #include "util.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -98,11 +97,7 @@ static void *watchdog_thread_fn(void *arg)
         uint64_t last = atomic_load_explicit(&wd->last_packet_ts,
                                              memory_order_relaxed);
         if (last > 0 && (now - last) > wd->cfg->watchdog.network_timeout_ms) {
-            char reason[64];
-            snprintf(reason, sizeof(reason), "network timeout (gap=%llums, limit=%ums)",
-                     (unsigned long long)(now - last),
-                     wd->cfg->watchdog.network_timeout_ms);
-            force_unkey(wd, reason);
+            force_unkey(wd, "network timeout");
             atomic_store(&wd->last_packet_ts, 0);
             continue;
         }
