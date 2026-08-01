@@ -138,6 +138,21 @@ journalctl -u rusrp -f
 sudo ./build/rusrp -c rusrp.toml
 ```
 
+### Digital loopback
+
+The `-l` / `--loopback` flag routes USRP packets back to the output path internally without touching the network. This is intended for bench testing the full analog signal chain without an ASL3 server.
+
+```bash
+sudo ./build/rusrp -c rusrp.toml --loopback
+```
+
+In loopback mode:
+- No UDP socket is opened; the `[usrp]` network settings are ignored
+- `half_duplex` is overridden to `false` — both directions must be active simultaneously for audio to loop
+- Everything else (ALSA, HID, DSP, jitter buffer, watchdog, telemetry) runs normally
+
+To test: key the radio or assert input_active. The captured audio will play back through the output path with the configured jitter buffer delay.
+
 ## udev rule
 
 The CM119A exposes VOLDN as a keyboard key. Without a udev rule, the kernel treats a continuous carrier (COS active) as a held KEY_VOLUMEDOWN and will silently drain system volume over time.
@@ -176,6 +191,15 @@ A clean start produces these INFO lines in order:
 rusrp starting, config: /etc/rusrp/rusrp.toml
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
 usrp: listening on :32001 → 198.51.100.10:34001
+alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
+rusrp ready
+```
+
+In loopback mode the `usrp:` line is absent and the startup message notes the mode:
+
+```
+rusrp starting, config: /etc/rusrp/rusrp.toml (loopback)
+logic: opened /dev/hidraw0 (gpio3, out_low=1)
 alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
 rusrp ready
 ```

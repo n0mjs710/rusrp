@@ -33,7 +33,7 @@ static void sig_handler(int sig)
 
 /* ── Input path: capture → DSP → USRP ──────────────────────────────────── */
 
-typedef struct {
+typedef struct tx_ctx {
     const config_t          *cfg;
     usrp_transport_t        *transport;
     audio_proc_t            *in_proc;
@@ -45,7 +45,22 @@ typedef struct {
     bool                     prev_keyed;
     atomic_int              *floor;
     bool                     floor_held;  /* only touched by capture callback */
+    void                   (*send)(struct tx_ctx *, const uint8_t *);
+    usrp_rx_cb_t             loopback_cb;
+    void                    *loopback_userdata;
 } tx_ctx_t;
+
+static void send_network(tx_ctx_t *ctx, const uint8_t *raw)
+{
+    usrp_transport_send(ctx->transport, raw, USRP_PKT_LEN);
+}
+
+static void send_loopback(tx_ctx_t *ctx, const uint8_t *raw)
+{
+    usrp_packet_t lpkt;
+    if (usrp_parse(raw, USRP_PKT_LEN, &lpkt) == 0)
+        ctx->loopback_cb(&lpkt, ctx->loopback_userdata);
+}
 
 /* Called from the ALSA capture thread for each 160-sample frame. */
 static void on_capture_frame(const int16_t *samples, size_t count, void *userdata)
@@ -88,7 +103,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
             seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                        memory_order_relaxed);
             usrp_build_key(pkt, seq, 1);
-            usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+            ctx->send(ctx, pkt);
         }
     }
 
@@ -100,7 +115,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 0);
-        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        ctx->send(ctx, pkt);
         telemetry_input_end(ctx->tel, ctx->alsa, ctx->in_proc);
         if (ctx->cfg->logic.half_duplex) {
             atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
@@ -116,7 +131,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_voice(pkt, seq, 1, trimmed);
-        usrp_transport_send(ctx->transport, pkt, USRP_PKT_LEN);
+        ctx->send(ctx, pkt);
     }
 }
 
@@ -201,14 +216,18 @@ static void *playback_thread_fn(void *arg)
 int main(int argc, char *argv[])
 {
     const char *config_path = DEFAULT_CONFIG;
+    bool        loopback    = false;
 
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0)
             && i + 1 < argc) {
             config_path = argv[++i];
+        } else if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--loopback") == 0) {
+            loopback = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("Usage: %s [-c config_file]\n", argv[0]);
-            printf("  Default config: %s\n", DEFAULT_CONFIG);
+            printf("Usage: %s [-c config_file] [-l]\n", argv[0]);
+            printf("  -c, --config   Config file (default: %s)\n", DEFAULT_CONFIG);
+            printf("  -l, --loopback Digital loopback: full-duplex, no network\n");
             return 0;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
@@ -222,7 +241,10 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Failed to load config: %s\n", config_path);
         return 1;
     }
-    sd_journal_print(LOG_INFO, "rusrp starting, config: %s", config_path);
+    if (loopback)
+        cfg.logic.half_duplex = false;
+    sd_journal_print(LOG_INFO, "rusrp starting, config: %s%s", config_path,
+                     loopback ? " (loopback)" : "");
 
     /* ── signals ── */
     struct sigaction sa = { .sa_handler = sig_handler };
@@ -249,10 +271,12 @@ int main(int argc, char *argv[])
     if (jitter_buffer_create(&jb, cfg.network.jitter_buffer_ms) != 0) goto fail;
     if (watchdog_create(&wd, &cfg, logic, jb, &g_floor) != 0)         goto fail;
 
-    /* ── init: USRP transport ── */
+    /* ── init: USRP transport (skipped in loopback mode) ── */
     rx_ctx_t rx_ctx = { .wd = wd, .jb = jb };
-    if (usrp_transport_create(&transport, &cfg, on_usrp_packet, &rx_ctx) != 0)
-        goto fail;
+    if (!loopback) {
+        if (usrp_transport_create(&transport, &cfg, on_usrp_packet, &rx_ctx) != 0)
+            goto fail;
+    }
 
     /* ── init: audio processing chains ── */
     if (audio_proc_create(&in_proc,
@@ -274,14 +298,17 @@ int main(int argc, char *argv[])
     /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};
     atomic_init(&tx_ctx.tx_seq, 0);
-    tx_ctx.cfg         = &cfg;
-    tx_ctx.transport   = transport;
-    tx_ctx.in_proc     = in_proc;
-    tx_ctx.in_trim     = in_trim;
-    tx_ctx.logic       = logic;
-    tx_ctx.tel         = tel;
-    tx_ctx.floor       = &g_floor;
-    tx_ctx.floor_held  = false;
+    tx_ctx.cfg                = &cfg;
+    tx_ctx.transport          = transport;
+    tx_ctx.in_proc            = in_proc;
+    tx_ctx.in_trim            = in_trim;
+    tx_ctx.logic              = logic;
+    tx_ctx.tel                = tel;
+    tx_ctx.floor              = &g_floor;
+    tx_ctx.floor_held         = false;
+    tx_ctx.send               = loopback ? send_loopback : send_network;
+    tx_ctx.loopback_cb        = on_usrp_packet;
+    tx_ctx.loopback_userdata  = &rx_ctx;
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
         goto fail;
