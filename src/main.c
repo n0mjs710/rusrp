@@ -8,6 +8,7 @@
 #include "jitter_buffer.h"
 #include "telemetry.h"
 #include "watchdog.h"
+#include "opus_codec.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -44,22 +45,47 @@ typedef struct tx_ctx {
     atomic_uint_fast32_t     tx_seq;
     bool                     prev_keyed;
     atomic_int              *floor;
-    bool                     floor_held;  /* only touched by capture callback */
-    void                   (*send)(struct tx_ctx *, const uint8_t *);
+    bool                     floor_held;
+    void                   (*send)(struct tx_ctx *, const uint8_t *, size_t);
     usrp_rx_cb_t             loopback_cb;
     void                    *loopback_userdata;
+    /* Opus encode state — NULL in PCM mode */
+    opus_codec_t            *opus_enc;
+    int16_t                  opus_accum[480]; /* max 60 ms accumulation buffer */
+    int                      opus_accum_n;    /* samples currently accumulated */
 } tx_ctx_t;
 
-static void send_network(tx_ctx_t *ctx, const uint8_t *raw)
+static void send_network(tx_ctx_t *ctx, const uint8_t *raw, size_t len)
 {
-    usrp_transport_send(ctx->transport, raw, USRP_PKT_LEN);
+    usrp_transport_send(ctx->transport, raw, len);
 }
 
-static void send_loopback(tx_ctx_t *ctx, const uint8_t *raw)
+static void send_loopback(tx_ctx_t *ctx, const uint8_t *raw, size_t len)
 {
     usrp_packet_t lpkt;
-    if (usrp_parse(raw, USRP_PKT_LEN, &lpkt) == 0)
+    if (usrp_parse(raw, len, &lpkt) == 0)
         ctx->loopback_cb(&lpkt, ctx->loopback_userdata);
+}
+
+/* Encode the full accumulation buffer and send one Opus packet.
+ * Advances tx_seq by the number of 20 ms sub-frames the packet covers.
+ * Resets opus_accum_n to 0.  Assumes accum is already full (padded if needed). */
+static void flush_opus_frame(tx_ctx_t *ctx)
+{
+    uint8_t  pkt[USRP_PKT_LEN];   /* USRP_PKT_LEN > USRP_HEADER_LEN + USRP_OPUS_MAX_BYTES */
+    uint8_t  opus_buf[USRP_OPUS_MAX_BYTES];
+
+    int opus_len = opus_codec_encode(ctx->opus_enc, ctx->opus_accum, opus_buf);
+    if (opus_len > 0) {
+        int frame_samples = opus_codec_frame_samples(ctx->opus_enc);
+        int sub_frames    = frame_samples / (int)USRP_AUDIO_FRAMES;
+        uint32_t seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq,
+                                  (unsigned)sub_frames, memory_order_relaxed);
+        size_t pkt_len = usrp_build_opus_voice(pkt, seq, 1,
+                                               opus_buf, (size_t)opus_len);
+        ctx->send(ctx, pkt, pkt_len);
+    }
+    ctx->opus_accum_n = 0;
 }
 
 /* Called from the ALSA capture thread for each 160-sample frame. */
@@ -78,7 +104,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
     uint8_t  pkt[USRP_PKT_LEN];
     uint32_t seq;
 
-    /* Rising edge: assert KEY immediately (channel capture), start trim. */
+    /* Rising edge: claim floor (half-duplex), start trim, send KEY. */
     if (keyed && !was_keyed) {
         bool proceed = true;
         if (ctx->cfg->logic.half_duplex) {
@@ -90,12 +116,13 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
                     ctx->floor, &expected, (int)FLOOR_INPUT,
                     memory_order_acquire, memory_order_relaxed);
                 if (!proceed)
-                    sd_journal_print(LOG_INFO,
-                                     "input: blocked (output active)");
+                    sd_journal_print(LOG_INFO, "input: blocked (output active)");
             }
         }
         ctx->floor_held = proceed;
         if (proceed) {
+            if (ctx->opus_enc != NULL)
+                ctx->opus_accum_n = 0;
             telemetry_input_start(ctx->tel);
             if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
                 sd_journal_print(LOG_DEBUG, "input: active");
@@ -103,19 +130,29 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
             seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                        memory_order_relaxed);
             usrp_build_key(pkt, seq, 1);
-            ctx->send(ctx, pkt);
+            ctx->send(ctx, pkt, USRP_PKT_LEN);
         }
     }
 
-    /* Falling edge: end trim, send UNKEY, release floor. */
+    /* Falling edge: flush any partial Opus frame, send UNKEY, release floor. */
     if (!keyed && was_keyed && ctx->floor_held) {
         if (ctx->cfg->logging.level <= LOG_LEVEL_DEBUG)
             sd_journal_print(LOG_DEBUG, "input: ended");
         audio_trim_tx_end(ctx->in_trim);
+
+        /* Pad and flush any partially-filled Opus accumulation buffer. */
+        if (ctx->opus_enc != NULL && ctx->opus_accum_n > 0) {
+            int frame_samples = opus_codec_frame_samples(ctx->opus_enc);
+            memset(ctx->opus_accum + ctx->opus_accum_n, 0,
+                   (size_t)(frame_samples - ctx->opus_accum_n) * sizeof(int16_t));
+            ctx->opus_accum_n = frame_samples;  /* mark full for flush_opus_frame */
+            flush_opus_frame(ctx);
+        }
+
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
         usrp_build_key(pkt, seq, 0);
-        ctx->send(ctx, pkt);
+        ctx->send(ctx, pkt, USRP_PKT_LEN);
         telemetry_input_end(ctx->tel, ctx->alsa, ctx->in_proc);
         if (ctx->cfg->logic.half_duplex) {
             atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
@@ -123,15 +160,27 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
         }
     }
 
+    /* Per-frame audio: trim then send (PCM) or accumulate (Opus). */
     int16_t trimmed[USRP_AUDIO_FRAMES];
     bool has_frame = audio_trim_process(ctx->in_trim,
                                         keyed ? frame : NULL,
                                         trimmed);
     if (has_frame) {
-        seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
-                                                   memory_order_relaxed);
-        usrp_build_voice(pkt, seq, 1, trimmed);
-        ctx->send(ctx, pkt);
+        if (ctx->opus_enc == NULL) {
+            /* PCM mode: one 20 ms frame → one packet. */
+            seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
+                                                       memory_order_relaxed);
+            usrp_build_voice(pkt, seq, 1, trimmed);
+            ctx->send(ctx, pkt, USRP_PKT_LEN);
+        } else {
+            /* Opus mode: accumulate; send when a full frame is ready. */
+            memcpy(ctx->opus_accum + ctx->opus_accum_n, trimmed,
+                   USRP_AUDIO_FRAMES * sizeof(int16_t));
+            ctx->opus_accum_n += (int)USRP_AUDIO_FRAMES;
+
+            if (ctx->opus_accum_n >= opus_codec_frame_samples(ctx->opus_enc))
+                flush_opus_frame(ctx);
+        }
     }
 }
 
@@ -140,6 +189,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
 typedef struct {
     watchdog_t      *wd;
     jitter_buffer_t *jb;
+    opus_codec_t    *opus_dec;  /* NULL in PCM mode */
 } rx_ctx_t;
 
 static void on_usrp_packet(const usrp_packet_t *pkt, void *userdata)
@@ -149,8 +199,26 @@ static void on_usrp_packet(const usrp_packet_t *pkt, void *userdata)
     watchdog_packet_received(ctx->wd);
     watchdog_key_event(ctx->wd, pkt->keyup != 0);
 
-    if (pkt->type == USRP_TYPE_VOICE && pkt->keyup)
+    if (!pkt->keyup)
+        return;
+
+    if (pkt->type == USRP_TYPE_VOICE) {
         jitter_buffer_push(ctx->jb, pkt->seq, pkt->audio);
+    } else if (pkt->type == USRP_TYPE_OPUS && ctx->opus_dec != NULL) {
+        int16_t pcm[480];
+        int n = opus_codec_decode(ctx->opus_dec,
+                                  pkt->opus, (int)pkt->opus_len, pcm);
+        if (n > 0) {
+            /* Split decoded frame into 20 ms sub-frames for the jitter buffer.
+             * Sequence numbers n, n+1, n+2 correspond to the three 20 ms slots
+             * the sender reserved via fetch_add(..., sub_frames). */
+            int sub_frames = n / (int)USRP_AUDIO_FRAMES;
+            for (int i = 0; i < sub_frames; i++)
+                jitter_buffer_push(ctx->jb,
+                                   pkt->seq + (uint32_t)i,
+                                   pcm + i * (int)USRP_AUDIO_FRAMES);
+        }
+    }
 }
 
 /* ── Playback thread: jitter buffer → DSP → ALSA ────────────────────────── */
@@ -243,8 +311,9 @@ int main(int argc, char *argv[])
     }
     if (loopback)
         cfg.logic.half_duplex = false;
-    sd_journal_print(LOG_INFO, "rusrp starting, config: %s%s", config_path,
-                     loopback ? " (loopback)" : "");
+    sd_journal_print(LOG_INFO, "rusrp starting, config: %s%s%s", config_path,
+                     loopback ? " (loopback)" : "",
+                     cfg.audio.codec == AUDIO_CODEC_OPUS ? " (opus)" : "");
 
     /* ── signals ── */
     struct sigaction sa = { .sa_handler = sig_handler };
@@ -263,6 +332,7 @@ int main(int argc, char *argv[])
     telemetry_t      *tel       = NULL;
     audio_trim_t     *in_trim   = NULL;
     audio_trim_t     *out_trim  = NULL;
+    opus_codec_t     *opus      = NULL;
     pthread_t         pb_thread;
     bool              pb_started = false;
 
@@ -271,8 +341,16 @@ int main(int argc, char *argv[])
     if (jitter_buffer_create(&jb, cfg.network.jitter_buffer_ms) != 0) goto fail;
     if (watchdog_create(&wd, &cfg, logic, jb, &g_floor) != 0)         goto fail;
 
+    /* ── init: Opus codec (skipped in PCM mode) ── */
+    if (cfg.audio.codec == AUDIO_CODEC_OPUS) {
+        if (opus_codec_create(&opus,
+                              cfg.audio.opus_bitrate,
+                              cfg.audio.opus_frame_ms) != 0)
+            goto fail;
+    }
+
     /* ── init: USRP transport (skipped in loopback mode) ── */
-    rx_ctx_t rx_ctx = { .wd = wd, .jb = jb };
+    rx_ctx_t rx_ctx = { .wd = wd, .jb = jb, .opus_dec = opus };
     if (!loopback) {
         if (usrp_transport_create(&transport, &cfg, on_usrp_packet, &rx_ctx) != 0)
             goto fail;
@@ -298,17 +376,19 @@ int main(int argc, char *argv[])
     /* ── init: ALSA (capture callback drives the input path) ── */
     tx_ctx_t tx_ctx = {0};
     atomic_init(&tx_ctx.tx_seq, 0);
-    tx_ctx.cfg                = &cfg;
-    tx_ctx.transport          = transport;
-    tx_ctx.in_proc            = in_proc;
-    tx_ctx.in_trim            = in_trim;
-    tx_ctx.logic              = logic;
-    tx_ctx.tel                = tel;
-    tx_ctx.floor              = &g_floor;
-    tx_ctx.floor_held         = false;
-    tx_ctx.send               = loopback ? send_loopback : send_network;
-    tx_ctx.loopback_cb        = on_usrp_packet;
-    tx_ctx.loopback_userdata  = &rx_ctx;
+    tx_ctx.cfg               = &cfg;
+    tx_ctx.transport         = transport;
+    tx_ctx.in_proc           = in_proc;
+    tx_ctx.in_trim           = in_trim;
+    tx_ctx.logic             = logic;
+    tx_ctx.tel               = tel;
+    tx_ctx.floor             = &g_floor;
+    tx_ctx.floor_held        = false;
+    tx_ctx.send              = loopback ? send_loopback : send_network;
+    tx_ctx.loopback_cb       = on_usrp_packet;
+    tx_ctx.loopback_userdata = &rx_ctx;
+    tx_ctx.opus_enc          = opus;
+    tx_ctx.opus_accum_n      = 0;
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
         goto fail;
@@ -358,6 +438,7 @@ int main(int argc, char *argv[])
     audio_trim_destroy(in_trim);
     audio_proc_destroy(out_proc);
     audio_proc_destroy(in_proc);
+    opus_codec_destroy(opus);
     usrp_transport_destroy(transport);
     watchdog_destroy(wd);
     jitter_buffer_destroy(jb);
@@ -368,7 +449,6 @@ int main(int argc, char *argv[])
 fail:
     sd_journal_print(LOG_ERR, "rusrp: initialization failed");
     sd_notify(0, "STOPPING=1");
-    /* Signal playback thread to stop before joining. */
     atomic_store(&g_stop, true);
     if (pb_started)   pthread_join(pb_thread, NULL);
     audio_alsa_destroy(alsa);
@@ -376,6 +456,7 @@ fail:
     audio_trim_destroy(in_trim);
     audio_proc_destroy(out_proc);
     audio_proc_destroy(in_proc);
+    opus_codec_destroy(opus);
     usrp_transport_destroy(transport);
     watchdog_destroy(wd);
     jitter_buffer_destroy(jb);

@@ -22,6 +22,9 @@ void config_defaults(config_t *cfg)
     cfg->audio.output_highpass  = false;
     cfg->audio.input_leading_trim_ms  = 0;
     cfg->audio.output_leading_trim_ms = 0;
+    cfg->audio.codec         = AUDIO_CODEC_PCM;
+    cfg->audio.opus_bitrate  = 8000;
+    cfg->audio.opus_frame_ms = 60;
 
     strncpy(cfg->logic.hid_device, "/dev/hidraw0", sizeof(cfg->logic.hid_device) - 1);
     cfg->logic.output_active_gpio = 3;
@@ -137,6 +140,19 @@ static int validate(const config_t *cfg)
         sd_journal_print(LOG_ERR, "config: logic.hid_device is required");
         ok = 0;
     }
+    if (cfg->audio.codec == AUDIO_CODEC_OPUS) {
+        if (cfg->audio.opus_bitrate < 4000 || cfg->audio.opus_bitrate > 64000) {
+            fprintf(stderr, "config: opus_bitrate must be 4000–64000 bps\n");
+            sd_journal_print(LOG_ERR, "config: opus_bitrate must be 4000–64000 bps");
+            ok = 0;
+        }
+        if (cfg->audio.opus_frame_ms != 20 && cfg->audio.opus_frame_ms != 40
+            && cfg->audio.opus_frame_ms != 60) {
+            fprintf(stderr, "config: opus_frame_ms must be 20, 40, or 60\n");
+            sd_journal_print(LOG_ERR, "config: opus_frame_ms must be 20, 40, or 60");
+            ok = 0;
+        }
+    }
 
     return ok ? 0 : -1;
 }
@@ -182,6 +198,18 @@ int config_load(config_t *cfg, const char *path)
         read_bool(t,  "output_highpass", &cfg->audio.output_highpass);
         read_uint(t,  "input_leading_trim_ms",  &cfg->audio.input_leading_trim_ms);
         read_uint(t,  "output_leading_trim_ms", &cfg->audio.output_leading_trim_ms);
+        toml_datum_t codec_d = toml_string_in(t, "codec");
+        if (codec_d.ok) {
+            if (strcmp(codec_d.u.s, "opus") == 0)
+                cfg->audio.codec = AUDIO_CODEC_OPUS;
+            else if (strcmp(codec_d.u.s, "pcm") == 0)
+                cfg->audio.codec = AUDIO_CODEC_PCM;
+            else
+                fprintf(stderr, "config: unknown codec \"%s\"; using pcm\n", codec_d.u.s);
+            free(codec_d.u.s);
+        }
+        read_int(t, "opus_bitrate",  &cfg->audio.opus_bitrate);
+        read_int(t, "opus_frame_ms", &cfg->audio.opus_frame_ms);
     }
 
     cfg->audio.input_leading_trim_ms  = round_trim_ms(cfg->audio.input_leading_trim_ms,

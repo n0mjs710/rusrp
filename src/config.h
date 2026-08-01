@@ -10,6 +10,11 @@ typedef struct {
     char     bind_address[64];
 } config_usrp_t;
 
+typedef enum {
+    AUDIO_CODEC_PCM  = 0,
+    AUDIO_CODEC_OPUS = 1,
+} audio_codec_t;
+
 typedef struct {
     char  alsa_device[64];
     float input_gain_db;
@@ -18,6 +23,9 @@ typedef struct {
     bool  output_highpass;
     unsigned int input_leading_trim_ms;
     unsigned int output_leading_trim_ms;
+    audio_codec_t codec;          /* AUDIO_CODEC_PCM (default) or AUDIO_CODEC_OPUS */
+    int           opus_bitrate;   /* VBR target in bps; default 8000               */
+    int           opus_frame_ms;  /* frame duration: 20, 40, or 60; default 60     */
 } config_audio_t;
 
 typedef struct {

@@ -7,12 +7,14 @@ UDEVDIR    ?= /lib/udev/rules.d
 
 CC      ?= gcc
 CFLAGS  += -std=c11 -O2 -Wall -Wextra -D_GNU_SOURCE -fPIE \
-            $(shell pkg-config --cflags alsa libsystemd)
+            $(shell pkg-config --cflags alsa libsystemd opus)
 LDFLAGS += -pie
-LDLIBS  += $(shell pkg-config --libs alsa libsystemd) -lm -lpthread
+LDLIBS  += $(shell pkg-config --libs alsa libsystemd opus) -lm -lpthread
 
 BUILDDIR  = build
 VENDORDIR = vendor/tomlc99
+
+# ── rusrp ────────────────────────────────────────────────────────────────────
 
 SRCS = src/main.c \
        src/config.c \
@@ -25,18 +27,31 @@ SRCS = src/main.c \
        src/jitter_buffer.c \
        src/telemetry.c \
        src/watchdog.c \
+       src/opus_codec.c \
        $(VENDORDIR)/toml.c
 
 OBJS     = $(patsubst %.c,$(BUILDDIR)/%.o,$(SRCS))
 DEPFILES = $(OBJS:.o=.d)
 TARGET   = $(BUILDDIR)/rusrp
 
+# ── usrp-reflector ───────────────────────────────────────────────────────────
+
+REFL_SRCS = src/reflector.c src/usrp_protocol.c
+REFL_OBJS = $(patsubst %.c,$(BUILDDIR)/%.o,$(REFL_SRCS))
+REFL_DEPS = $(REFL_OBJS:.o=.d)
+REFLECTOR = $(BUILDDIR)/usrp-reflector
+
+# ── rules ─────────────────────────────────────────────────────────────────────
+
 .PHONY: all clean install uninstall
 
-all: $(TARGET)
+all: $(TARGET) $(REFLECTOR)
 
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(REFLECTOR): $(REFL_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^
 
 # Application sources — include vendored headers, generate dependency files
 $(BUILDDIR)/src/%.o: src/%.c
@@ -48,13 +63,14 @@ $(BUILDDIR)/$(VENDORDIR)/%.o: $(VENDORDIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -Wno-unused-result -MMD -MP -c -o $@ $<
 
--include $(DEPFILES)
+-include $(DEPFILES) $(REFL_DEPS)
 
 clean:
 	rm -rf $(BUILDDIR)
 
-install: $(TARGET)
+install: $(TARGET) $(REFLECTOR)
 	install -Dm755 $(TARGET)                 $(DESTDIR)$(BINDIR)/rusrp
+	install -Dm755 $(REFLECTOR)              $(DESTDIR)$(BINDIR)/usrp-reflector
 	install -Dm644 config/rusrp.toml.example $(DESTDIR)$(SYSCONFDIR)/rusrp/rusrp.toml.example
 	install -Dm644 systemd/rusrp.service     $(DESTDIR)$(UNITDIR)/rusrp.service
 	install -Dm644 udev/90-cm119a.rules      $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
@@ -70,6 +86,7 @@ install: $(TARGET)
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/rusrp
+	rm -f $(DESTDIR)$(BINDIR)/usrp-reflector
 	rm -f $(DESTDIR)$(UNITDIR)/rusrp.service
 	rm -f $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
 	@echo "rusrp: config at $(SYSCONFDIR)/rusrp/ preserved — remove manually if desired"

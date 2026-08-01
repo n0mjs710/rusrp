@@ -7,7 +7,11 @@
 #define USRP_HEADER_LEN     32u
 #define USRP_AUDIO_FRAMES   160u
 #define USRP_AUDIO_BYTES    (USRP_AUDIO_FRAMES * sizeof(int16_t))
-#define USRP_PKT_LEN        (USRP_HEADER_LEN + USRP_AUDIO_BYTES)  /* 352 bytes */
+#define USRP_PKT_LEN        (USRP_HEADER_LEN + USRP_AUDIO_BYTES)  /* 352 bytes, PCM */
+
+/* Maximum Opus payload bytes in a single USRP packet.
+ * 60 ms at any sane bitrate fits well under this ceiling. */
+#define USRP_OPUS_MAX_BYTES 256u
 
 typedef enum {
     USRP_TYPE_VOICE      = 0,
@@ -28,7 +32,9 @@ typedef struct {
     usrp_type_t type;
     uint32_t    mpxid;
     uint32_t    reserved;
-    int16_t     audio[USRP_AUDIO_FRAMES]; /* valid when type == USRP_TYPE_VOICE */
+    int16_t     audio[USRP_AUDIO_FRAMES];   /* valid when type == USRP_TYPE_VOICE */
+    uint8_t     opus[USRP_OPUS_MAX_BYTES];  /* valid when type == USRP_TYPE_OPUS  */
+    size_t      opus_len;                   /* encoded byte count                 */
 } usrp_packet_t;
 
 /* Parse a raw UDP payload into *out. Returns 0 on success, -1 on bad packet. */
@@ -40,3 +46,8 @@ void usrp_build_voice(uint8_t *buf, uint32_t seq, uint32_t keyup,
 
 /* Build a 352-byte key/unkey frame with silence audio. */
 void usrp_build_key(uint8_t *buf, uint32_t seq, uint32_t keyup);
+
+/* Build an Opus voice packet.  Total length = USRP_HEADER_LEN + opus_len.
+ * Returns the packet length written into buf; buf must be >= that size. */
+size_t usrp_build_opus_voice(uint8_t *buf, uint32_t seq, uint32_t keyup,
+                             const uint8_t *opus, size_t opus_len);

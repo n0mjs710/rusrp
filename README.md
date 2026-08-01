@@ -42,10 +42,11 @@ Analog device                            AllStarLink server
 
 - **Audio**: 8 kHz mono 16-bit, 20 ms frames
 - **HID device**: CM108/CM119A — COS on VOLDN (pin 48), PTT on GPIO3 (pin 13)
-- **USRP protocol**: 352-byte UDP frames, network byte order (ASL3 only)
+- **USRP protocol**: 352-byte UDP frames, network byte order (ASL3 only in PCM mode)
 - **DSP**: 4th-order Butterworth high-pass filter at 250 Hz on both paths, enabled independently (blocks CTCSS/DCS tones)
 - **Jitter buffer**: 16-slot sequence-ordered buffer with silence injection for gaps
 - **Watchdog**: sd_notify integration; network timeout forces PTT release
+- **Opus mode**: optional narrowband Opus codec (8 kbps VBR, 60 ms frames) for challenged network paths; requires `usrp-reflector` or compatible server
 
 ## Requirements
 
@@ -58,7 +59,7 @@ Analog device                            AllStarLink server
 ### Build dependencies
 
 ```bash
-sudo apt-get install -y build-essential pkg-config libsystemd-dev libasound2-dev
+sudo apt-get install -y build-essential pkg-config libsystemd-dev libasound2-dev libopus-dev
 ```
 
 The TOML config parser ([tomlc99](https://github.com/cktan/tomlc99), MIT) is vendored in the repository — no separate install or download step needed.
@@ -100,7 +101,10 @@ Key settings:
 | `[logic]` | `input_active_low` | `true` if the input signal is active when the line is pulled low (most hardware) |
 | `[logic]` | `output_active_low` | `true` if the output signal is active-low (open-collector driver — most hardware) |
 | `[logic]` | `half_duplex` | `true` to block the second direction until the first releases (first-come-first-served); useful when hardware or wireline configuration cannot cleanly handle simultaneous RX and TX |
-| `[network]` | `jitter_buffer_ms` | Jitter buffer depth, 40–250 ms; non-multiples of 20 round up to the next frame |
+| `[audio]` | `codec` | `"pcm"` (default, standard ASL3) or `"opus"` (narrowband Opus, requires compatible server) |
+| `[audio]` | `opus_bitrate` | Opus VBR target in bps (4000–64000); default 8000. 8 kbps is transparent for 300–3000 Hz communications voice |
+| `[audio]` | `opus_frame_ms` | Opus frame duration: 20, 40, or 60 ms; default 60. 60 ms reduces packet rate 3× vs PCM |
+| `[network]` | `jitter_buffer_ms` | Jitter buffer depth, 40–250 ms; non-multiples of 20 round up to the next frame; recommend ≥ 120 ms in Opus mode with 60 ms frames |
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 | `[watchdog]` | `unkey_debounce_ms` | Wait N ms before acting on an unkey event; absorbs brief keyup=0 gaps from Asterisk bridging (0 = act immediately) |
 
@@ -137,6 +141,44 @@ journalctl -u rusrp -f
 ```bash
 sudo ./build/rusrp -c rusrp.toml
 ```
+
+### Opus mode
+
+Set `codec = "opus"` in `[audio]` to use narrowband Opus instead of raw PCM. This requires a compatible server on the far end — either `usrp-reflector` (included) or a future Opus-aware ASL server.
+
+**Why Opus?** On challenged network paths (high jitter, limited bandwidth), PCM sends 320 bytes every 20 ms (~128 kbps raw). Opus at 8 kbps with 60 ms frames sends ~60 bytes every 60 ms — roughly 16× less traffic — with quality that is transparent over a ±5 kHz FM communications channel (300–3000 Hz passband).
+
+**Packet format:** Opus packets use USRP type 7 (`USRP_TYPE_OPUS`), a 32-byte standard USRP header followed by the raw Opus frame bytes. Length is determined by the UDP packet size. KEY and UNKEY control frames remain standard PCM type for compatibility.
+
+**Sequence numbers:** Each 60 ms Opus packet advances the sequence counter by 3 (one per 20 ms jitter buffer slot). The decoder splits the decoded 480-sample frame into three 160-sample sub-frames and pushes each to its corresponding jitter buffer slot.
+
+**Recommended settings for Opus mode:**
+```toml
+[audio]
+codec           = "opus"
+opus_bitrate    = 8000    # 8 kbps VBR — transparent for communications voice
+opus_frame_ms   = 60      # 60 ms frames — 3× packet rate reduction vs PCM
+
+[network]
+jitter_buffer_ms = 120    # at least 2 Opus packets of headroom
+```
+
+### usrp-reflector
+
+`usrp-reflector` is a simple UDP conference bridge for testing Opus mode (or PCM mode) without an ASL3 server. Multiple rusrp instances connect to it; keyed audio from one client is forwarded to all others. Half-duplex floor: the first client to key up holds the floor until it unkeys.
+
+```bash
+# Start the reflector on default port 34001
+sudo usrp-reflector
+
+# Custom port and bind address
+sudo usrp-reflector -p 34001 -b 0.0.0.0
+
+# Point rusrp at the reflector
+# In rusrp.toml: remote_host = "<reflector IP>", remote_port = 34001
+```
+
+The reflector forwards raw UDP bytes without inspecting audio payload, so it works transparently for both PCM and Opus traffic. It prints client connect/expire events to stdout and is designed for interactive testing, not headless systemd operation.
 
 ### Digital loopback
 
@@ -195,11 +237,32 @@ alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
 rusrp ready
 ```
 
+In Opus mode an `opus:` line appears after the HID line:
+
+```
+rusrp starting, config: /etc/rusrp/rusrp.toml (opus)
+logic: opened /dev/hidraw0 (gpio3, out_low=1)
+opus: 60 ms frames, 8000 bps VBR narrowband SILK
+usrp: listening on :32001 → 198.51.100.10:34001
+alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
+rusrp ready
+```
+
 In loopback mode the `usrp:` line is absent and the startup message notes the mode:
 
 ```
 rusrp starting, config: /etc/rusrp/rusrp.toml (loopback)
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
+alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
+rusrp ready
+```
+
+Both flags may be combined (`--loopback` with `codec = "opus"`):
+
+```
+rusrp starting, config: /etc/rusrp/rusrp.toml (loopback) (opus)
+logic: opened /dev/hidraw0 (gpio3, out_low=1)
+opus: 60 ms frames, 8000 bps VBR narrowband SILK
 alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
 rusrp ready
 ```
