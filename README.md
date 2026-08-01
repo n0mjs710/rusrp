@@ -4,6 +4,8 @@ A lightweight audio/control terminal for amateur radio repeater linking. Runs on
 
 One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session.
 
+By default rusrp speaks the standard USRP/PCM protocol, fully compatible with ASL3's `chan_usrp`. An optional **Opus mode** is also available for bandwidth-constrained paths — it uses narrowband Opus at 8 kbps with 60 ms frames, reducing network traffic roughly 11× while remaining transparent over a 300–3000 Hz FM communications channel. Opus mode requires a compatible peer: either another rusrp instance, or the included `usrp-reflector`. Two rusrp instances can also link **point-to-point** without any server — each simply points at the other's IP and port. See [Opus mode](#opus-mode) and [usrp-reflector](#usrp-reflector) below.
+
 ## Terminology
 
 Direction in rusrp is always described from the **analog side** (the CM119A). The same line means different things depending on what is connected:
@@ -165,7 +167,7 @@ jitter_buffer_ms = 120    # at least 2 Opus packets of headroom
 
 ### usrp-reflector
 
-`usrp-reflector` is a simple UDP conference bridge for testing Opus mode (or PCM mode) without an ASL3 server. Multiple rusrp instances connect to it; keyed audio from one client is forwarded to all others. Half-duplex floor: the first client to key up holds the floor until it unkeys.
+`usrp-reflector` is a simple UDP conference bridge. Multiple rusrp instances connect to it; keyed audio from one client is forwarded to all others. Half-duplex floor: the first client to key up holds the floor until it unkeys.
 
 ```bash
 # Start the reflector on default port 34001
@@ -178,7 +180,16 @@ sudo usrp-reflector -p 34001 -b 0.0.0.0
 # In rusrp.toml: remote_host = "<reflector IP>", remote_port = 34001
 ```
 
-The reflector forwards raw UDP bytes without inspecting audio payload, so it works transparently for both PCM and Opus traffic. It prints client connect/expire events to stdout and is designed for interactive testing, not headless systemd operation.
+The reflector works for both PCM and Opus because it forwards raw UDP bytes without inspecting the audio payload — it only looks at the USRP header's `keyup` field for floor control. No header format changes were needed for Opus; the packet length from `recv()` implicitly carries the payload size for both types.
+
+**Point-to-point without a reflector:** two rusrp instances can link directly by pointing at each other — no server of any kind required. Set each node's `remote_host`/`remote_port` to the other node's IP and `local_port`. This works for both PCM and Opus mode.
+
+```
+Node A: remote_host = <B IP>, remote_port = 34001, local_port = 34001
+Node B: remote_host = <A IP>, remote_port = 34001, local_port = 34001
+```
+
+The reflector is only needed when three or more nodes need to share a conference. It prints client connect/expire events to stdout and is designed for interactive testing, not headless systemd operation.
 
 ### Digital loopback
 
