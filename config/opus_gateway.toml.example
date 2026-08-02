@@ -1,0 +1,34 @@
+# opus-gateway configuration
+#
+# opus-gateway bridges between MMDVMHost (FM protocol, PCM audio on loopback)
+# and rusrp peers or usrp-reflector (Opus USRP over the network).
+#
+# MMDVMHost MMDVM.ini must point its [FM] Network settings to this gateway:
+#   GatewayAddress=127.0.0.1
+#   GatewayPort=34001     ← matches mmdvm.local_port below
+#   LocalAddress=127.0.0.1
+#   LocalPort=32001       ← matches mmdvm.rpt_port below
+
+[mmdvm]
+# Where opus-gateway listens for packets from MMDVMHost.
+local_address = "127.0.0.1"
+local_port    = 34001
+
+# Where MMDVMHost is listening (the LocalAddress/LocalPort from MMDVM.ini [FM]).
+rpt_address   = "127.0.0.1"
+rpt_port      = 32001
+
+[network]
+# The rusrp peer or usrp-reflector to send Opus USRP to.
+remote_host   = "198.51.100.10"
+remote_port   = 34001
+
+# Local socket for the network side of opus-gateway.
+bind_address  = "0.0.0.0"
+local_port    = 34002
+
+[audio]
+# Opus encoding settings — must match the far-end rusrp or reflector expectations.
+# PCM peers (type-0 USRP) are also accepted on receive without reconfiguration.
+opus_bitrate  = 8000    # VBR target in bps (4000–64000)
+opus_frame_ms = 60      # frame duration: 20, 40, or 60 ms

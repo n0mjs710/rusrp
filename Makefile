@@ -41,17 +41,31 @@ REFL_OBJS = $(patsubst %.c,$(BUILDDIR)/%.o,$(REFL_SRCS))
 REFL_DEPS = $(REFL_OBJS:.o=.d)
 REFLECTOR = $(BUILDDIR)/usrp-reflector
 
+# ── opus-gateway ──────────────────────────────────────────────────────────────
+
+GW_SRCS = src/opus_gateway.c \
+           src/usrp_protocol.c \
+           src/opus_codec.c \
+           $(VENDORDIR)/toml.c
+GW_OBJS  = $(patsubst %.c,$(BUILDDIR)/%.o,$(GW_SRCS))
+GW_DEPS  = $(GW_OBJS:.o=.d)
+GW_LIBS  = $(shell pkg-config --libs opus libsystemd) -lm
+GATEWAY  = $(BUILDDIR)/opus-gateway
+
 # ── rules ─────────────────────────────────────────────────────────────────────
 
 .PHONY: all clean install uninstall
 
-all: $(TARGET) $(REFLECTOR)
+all: $(TARGET) $(REFLECTOR) $(GATEWAY)
 
 $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(REFLECTOR): $(REFL_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
+
+$(GATEWAY): $(GW_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(GW_LIBS)
 
 # Application sources — include vendored headers, generate dependency files
 $(BUILDDIR)/src/%.o: src/%.c
@@ -63,15 +77,17 @@ $(BUILDDIR)/$(VENDORDIR)/%.o: $(VENDORDIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -Wno-unused-result -MMD -MP -c -o $@ $<
 
--include $(DEPFILES) $(REFL_DEPS)
+-include $(DEPFILES) $(REFL_DEPS) $(GW_DEPS)
 
 clean:
 	rm -rf $(BUILDDIR)
 
-install: $(TARGET) $(REFLECTOR)
-	install -Dm755 $(TARGET)                 $(DESTDIR)$(BINDIR)/rusrp
-	install -Dm755 $(REFLECTOR)              $(DESTDIR)$(BINDIR)/usrp-reflector
-	install -Dm644 config/rusrp.toml.example $(DESTDIR)$(SYSCONFDIR)/rusrp/rusrp.toml.example
+install: $(TARGET) $(REFLECTOR) $(GATEWAY)
+	install -Dm755 $(TARGET)                        $(DESTDIR)$(BINDIR)/rusrp
+	install -Dm755 $(REFLECTOR)                     $(DESTDIR)$(BINDIR)/usrp-reflector
+	install -Dm755 $(GATEWAY)                       $(DESTDIR)$(BINDIR)/opus-gateway
+	install -Dm644 config/rusrp.toml.example        $(DESTDIR)$(SYSCONFDIR)/rusrp/rusrp.toml.example
+	install -Dm644 config/opus_gateway.toml.example $(DESTDIR)$(SYSCONFDIR)/rusrp/opus_gateway.toml.example
 	install -Dm644 systemd/rusrp.service     $(DESTDIR)$(UNITDIR)/rusrp.service
 	install -Dm644 udev/90-cm119a.rules      $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
 	@if [ -z "$(DESTDIR)" ]; then \
@@ -87,6 +103,7 @@ install: $(TARGET) $(REFLECTOR)
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/rusrp
 	rm -f $(DESTDIR)$(BINDIR)/usrp-reflector
+	rm -f $(DESTDIR)$(BINDIR)/opus-gateway
 	rm -f $(DESTDIR)$(UNITDIR)/rusrp.service
 	rm -f $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
 	@echo "rusrp: config at $(SYSCONFDIR)/rusrp/ preserved — remove manually if desired"
