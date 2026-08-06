@@ -197,6 +197,37 @@ Node B: remote_host = <A IP>, remote_port = 34001, local_port = 34001
 
 The reflector is only needed when three or more nodes need to share a conference. It prints client connect/expire events to stdout and is designed for interactive testing, not headless systemd operation.
 
+### opus-gateway
+
+`opus-gateway` bridges MMDVMHost's native FM protocol (PCM audio over loopback) to Opus-encoded USRP on the network side. It lets an MMDVMHost FM instance join an Opus-mode rusrp/`usrp-reflector` conference directly, without a rusrp analog leg in between — MMDVMHost talks PCM FM to it on `127.0.0.1`, it talks Opus USRP out to the network.
+
+```
+MMDVMHost (FM protocol, PCM, loopback) ◄──► opus-gateway ◄──► rusrp peer / usrp-reflector (Opus USRP, network)
+```
+
+MMDVMHost's `MMDVM.ini` `[FM]` network settings must point at it:
+
+```ini
+GatewayAddress=127.0.0.1
+GatewayPort=34001     # matches [mmdvm] local_port in opus-gateway.toml
+LocalAddress=127.0.0.1
+LocalPort=32001       # matches [mmdvm] rpt_port in opus-gateway.toml
+```
+
+```bash
+# The installed file is the *.example* copy — rename/copy it before first run,
+# unlike rusrp.toml this isn't done for you on install.
+sudo cp /etc/rusrp/opus_gateway.toml.example /etc/rusrp/opus-gateway.toml
+sudo nano /etc/rusrp/opus-gateway.toml   # set [network] remote_host at minimum
+
+sudo opus-gateway                        # uses /etc/rusrp/opus-gateway.toml
+sudo opus-gateway -c /path/to/config.toml
+```
+
+Three config sections: `[mmdvm]` (where it listens for MMDVMHost, and where it sends FMD packets back), `[network]` (the rusrp peer or `usrp-reflector` to send/receive Opus USRP from), and `[audio]` (Opus bitrate/frame size — must match what the far end expects). PCM USRP peers (type-0) are also accepted on the receive path without reconfiguration, for compatibility with nodes not running Opus. See `config/opus_gateway.toml.example` for the full annotated reference.
+
+Like `usrp-reflector`, this is a convenience utility for interactive use right now, not a supported headless service — no systemd unit yet. Run it manually in a terminal or your own process supervisor; more packaging polish is planned but not there yet.
+
 ### Digital loopback
 
 The `-l` / `--loopback` flag routes USRP packets back to the output path internally without touching the network. This is intended for bench testing the full analog signal chain without an ASL3 server.
