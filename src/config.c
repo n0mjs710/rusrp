@@ -20,6 +20,8 @@ void config_defaults(config_t *cfg)
     cfg->audio.output_gain_db   = 0.0f;
     cfg->audio.input_highpass   = false;
     cfg->audio.output_highpass  = false;
+    cfg->audio.input_bandpass   = false;
+    cfg->audio.output_bandpass  = false;
     cfg->audio.input_leading_trim_ms  = 0;
     cfg->audio.output_leading_trim_ms = 0;
     cfg->audio.codec         = AUDIO_CODEC_PCM;
@@ -196,6 +198,8 @@ int config_load(config_t *cfg, const char *path)
         read_float(t, "output_gain_db",  &cfg->audio.output_gain_db);
         read_bool(t,  "input_highpass",  &cfg->audio.input_highpass);
         read_bool(t,  "output_highpass", &cfg->audio.output_highpass);
+        read_bool(t,  "input_bandpass",  &cfg->audio.input_bandpass);
+        read_bool(t,  "output_bandpass", &cfg->audio.output_bandpass);
         read_uint(t,  "input_leading_trim_ms",  &cfg->audio.input_leading_trim_ms);
         read_uint(t,  "output_leading_trim_ms", &cfg->audio.output_leading_trim_ms);
         toml_datum_t codec_d = toml_string_in(t, "codec");

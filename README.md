@@ -26,6 +26,8 @@ Analog device                            AllStarLink server
         │            │                           │
         │        250 Hz HPF  (input_highpass)    │
         │            │                           │
+        │    300-2700 Hz bandpass (input_bandpass)   │
+        │            │                           │
         │        leading trim (input_leading_trim_ms)   │
         │            │                           │
         │           USRP ───────────────► ASL3 chan_usrp
@@ -33,6 +35,8 @@ Analog device                            AllStarLink server
    audio in ◄── ALSA playback                    |
         │            ▲                           |
         │        leading trim (output_leading_trim_ms)  |
+        │            ▲                           |
+        │   300-2700 Hz bandpass (output_bandpass)   |
         │            ▲                           |
         │        250 Hz HPF  (output_highpass)   |
         │            ▲                           |
@@ -45,9 +49,9 @@ Analog device                            AllStarLink server
 - **Audio**: 8 kHz mono 16-bit, 20 ms frames
 - **HID device**: CM108/CM119A — COS on VOLDN (pin 48), PTT on GPIO3 (pin 13)
 - **USRP protocol**: 352-byte UDP frames, network byte order (ASL3 only in PCM mode)
-- **DSP**: 4th-order Butterworth high-pass filter at 250 Hz on both paths, enabled independently (blocks CTCSS/DCS tones)
-- **Jitter buffer**: 16-slot sequence-ordered buffer with silence injection for gaps
-- **Watchdog**: sd_notify integration; network timeout forces PTT release
+- **DSP**: 4th-order Butterworth high-pass filter at 250 Hz on both paths, enabled independently (blocks CTCSS/DCS tones); optional 3rd-order Chebyshev Type 1 bandpass filter at 300-2700 Hz (0.2 dB ripple), also independent per path — the exact same coefficients MMDVM-Host's own RX audio chain uses (ported from the sibling `usrp-rc` project's `voice_filter.c`), so an analog repeater linked through rusrp has the same effective bandwidth as one linked through a digital MMDVM path. The bandpass filter already has its own ~300 Hz low-cut built in, so enabling both filters on the same path stacks two low-end cuts for no real benefit — pick one per path, not both
+- **Jitter buffer**: plain arrival-order FIFO (no sequence-number reordering — ASL3's sequencing isn't policed, only trusted for arrival order), overflow-capped at `jitter_buffer_ms` with oldest-frame-dropped on a sustained burst, silence injection on genuine underrun
+- **Watchdog**: sd_notify integration; network timeout forces PTT release; also defers asserting PTT until `jitter_buffer_ms` after network keyup, independent of the jitter buffer's own fill state
 - **Opus mode**: optional narrowband Opus codec (8 kbps VBR, 60 ms frames) for challenged network paths; requires `usrp-reflector` or compatible server
 
 ## Requirements
@@ -96,6 +100,8 @@ Key settings:
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
 | `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS tones from the analog side) |
 | `[audio]` | `output_highpass` | Enable 250 Hz HPF on playback audio (blocks CTCSS/DCS tones from the network side) |
+| `[audio]` | `input_bandpass` | Enable 300-2700 Hz Chebyshev bandpass on captured audio — matches MMDVM-Host's RX bandwidth exactly. Not recommended together with `input_highpass` — the bandpass already has its own ~300 Hz low-cut, so stacking the 250 Hz HPF on top adds a second low-end filter for no real benefit |
+| `[audio]` | `output_bandpass` | Enable 300-2700 Hz Chebyshev bandpass on playback audio — matches MMDVM-Host's RX bandwidth exactly. Same caution: not recommended together with `output_highpass` |
 | `[audio]` | `input_leading_trim_ms` | Silence the first N ms of captured audio after input_active rises (0–260, rounds to 20 ms). Removes mic click. |
 | `[audio]` | `output_leading_trim_ms` | Silence the first N ms of output audio after output_active rises (0–260, rounds to 20 ms). Gives CTCSS decoders time to open (~100 ms). |
 | `[logic]` | `hid_device` | hidraw device (e.g. `/dev/hidraw0`) |
@@ -106,7 +112,7 @@ Key settings:
 | `[audio]` | `codec` | `"pcm"` (default, standard ASL3) or `"opus"` (narrowband Opus, requires compatible server) |
 | `[audio]` | `opus_bitrate` | Opus VBR target in bps (4000–64000); default 8000. 8 kbps is transparent for 300–3000 Hz communications voice |
 | `[audio]` | `opus_frame_ms` | Opus frame duration: 20, 40, or 60 ms; default 60. 60 ms reduces packet rate 3× vs PCM |
-| `[network]` | `jitter_buffer_ms` | Jitter buffer depth, 40–250 ms; non-multiples of 20 round up to the next frame; recommend ≥ 120 ms in Opus mode with 60 ms frames |
+| `[network]` | `jitter_buffer_ms` | Two things at once: the overflow ceiling on the arrival-order jitter buffer (frames beyond this depth get dropped oldest-first during a sustained burst), and the delay `watchdog.c` waits after network keyup before asserting PTT. 40–250 ms; non-multiples of 20 round up to the next frame; recommend ≥ 120 ms in Opus mode with 60 ms frames |
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 | `[watchdog]` | `unkey_debounce_ms` | Wait N ms before acting on an unkey event; absorbs brief keyup=0 gaps from Asterisk bridging (0 = act immediately) |
 
@@ -291,7 +297,7 @@ Each event type shows only the fields relevant to that path:
 
 ```
 input-end:  dur=3.0s in=-12.3pk/-18.0rms dBFS overruns=0 clips=0
-output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 underruns=0 clips=0
+output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms overflow=0 silence=0 underruns=0 clips=0
 ```
 
 **`input-end` fields:**
@@ -310,8 +316,8 @@ output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 un
 | `dur=X.Xs` | Transmission duration in seconds |
 | `out=Xpk/Yrms dBFS` | Peak and RMS level of audio sent to the output device, accumulated over the transmission |
 | `jitter=X ms` | Estimated network jitter at log time |
-| `late=N` | USRP packets dropped on arrival (arrived behind the playout cursor or outside the jitter buffer window) |
-| `silence=N` | Playout slots where no frame was available — silence injected; high values with low `late` indicate packet loss before the frame reached us |
+| `overflow=N` | USRP packets dropped because the jitter buffer was at its `jitter_buffer_ms` capacity — only happens on a sustained burst arriving faster than the 20 ms drain rate; expect 0 under normal conditions |
+| `silence=N` | Playout slots where no frame was available — silence injected; reflects packet loss or a delivery gap before the frame reached us |
 | `underruns=N` | ALSA playback buffer underruns |
 | `clips=N` | Samples clipped by the output gain stage — non-zero means `output_gain_db` is set too high |
 
@@ -320,7 +326,7 @@ output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms late=0 silence=0 un
 A healthy output-end line looks like this:
 
 ```
-output-end: dur=3.0s out=-14.1pk/-20.3rms dBFS jitter=8.0ms late=0 silence=0 underruns=0 clips=0
+output-end: dur=3.0s out=-14.1pk/-20.3rms dBFS jitter=8.0ms overflow=0 silence=0 underruns=0 clips=0
 ```
 
 What elevated values mean:
@@ -328,14 +334,13 @@ What elevated values mean:
 | Field | What it tells you | What to try |
 |---|---|---|
 | `jitter` high | Variable packet delivery from the network or ASL server | Values up to ~30 ms are normal on typical Internet paths; sustained values above 80–100 ms indicate a congested or poor-quality path |
-| `late` > 0 | Packets arrived after the playout cursor and were discarded | Increase `jitter_buffer_ms` in 20 ms steps until `late` reaches zero |
-| `silence` > 0 with `late` = 0 | The buffer ran dry — packets simply stopped arriving (packet loss or a gap from Asterisk) | A consistent 6–8 frames per transmission is a known Asterisk characteristic and is benign; values above ~20 suggest packet loss on the network path; increasing `jitter_buffer_ms` will not help when `late=0` |
-| `silence` > 0 with `late` > 0 | Buffer too shallow — frames arrived but too late to use | Increase `jitter_buffer_ms` |
+| `overflow` > 0 | A sustained burst arrived faster than the 20 ms drain rate and the buffer hit its `jitter_buffer_ms` capacity — genuinely rare | Increase `jitter_buffer_ms` if it recurs; this is not a sequencing symptom (the buffer no longer polices ASL3's sequence numbers, only arrival order), so persistent overflow points at a real delivery-rate problem on the network path, not routine jitter |
+| `silence` > 0 | The buffer ran dry — packets simply stopped arriving for a stretch (packet loss, or a gap from Asterisk) | A consistent 6–8 frames per transmission is a known Asterisk characteristic and is benign; values above ~20 suggest packet loss on the network path; increasing `jitter_buffer_ms` will not help a genuine delivery gap, only a too-tight overflow ceiling |
 | `underruns` > 0 | ALSA playback buffer ran dry — CPU couldn't keep up | System load issue; reduce other load on the SBC |
 | `overruns` > 0 (input-end) | ALSA capture buffer filled before rusrp could read it | Same as underruns — system load |
 | `clips` > 0 | Gain stage is clipping — audio is distorting | Reduce `input_gain_db` (for `input-end`) or `output_gain_db` (for `output-end`) |
 
-The `jitter_buffer_ms` setting trades latency for reliability. A deeper buffer absorbs more network jitter but delays the start of each transmission by the same amount. Increase it until `late=0`, then stop.
+`jitter_buffer_ms` does two things: it's the overflow ceiling on the jitter buffer (a burst beyond this depth starts dropping the oldest frame to make room for the newest), and it's how long `watchdog.c` waits after network keyup before asserting PTT (see `ptt_ready_ts` in `watchdog.c`), giving the buffer a moment to have real audio queued before the radio keys up. Raise it if `overflow` shows up in practice; otherwise the default is fine — unlike the old sequence-windowed design, this number is no longer something you need to tune away routine `late` warnings with.
 
 When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels, `input_active=` and `output_active=` flags, and all stats from both paths — useful to confirm the daemon is alive between transmissions.
 

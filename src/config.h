@@ -21,6 +21,8 @@ typedef struct {
     float output_gain_db;
     bool  input_highpass;
     bool  output_highpass;
+    bool  input_bandpass;
+    bool  output_bandpass;
     unsigned int input_leading_trim_ms;
     unsigned int output_leading_trim_ms;
     audio_codec_t codec;          /* AUDIO_CODEC_PCM (default) or AUDIO_CODEC_OPUS */

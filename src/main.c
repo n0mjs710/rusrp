@@ -203,20 +203,16 @@ static void on_usrp_packet(const usrp_packet_t *pkt, void *userdata)
         return;
 
     if (pkt->type == USRP_TYPE_VOICE) {
-        jitter_buffer_push(ctx->jb, pkt->seq, pkt->audio);
+        jitter_buffer_push(ctx->jb, pkt->audio);
     } else if (pkt->type == USRP_TYPE_OPUS && ctx->opus_dec != NULL) {
         int16_t pcm[480];
         int n = opus_codec_decode(ctx->opus_dec,
                                   pkt->opus, (int)pkt->opus_len, pcm);
         if (n > 0) {
-            /* Split decoded frame into 20 ms sub-frames for the jitter buffer.
-             * Sequence numbers n, n+1, n+2 correspond to the three 20 ms slots
-             * the sender reserved via fetch_add(..., sub_frames). */
+            /* Split decoded frame into 20 ms sub-frames for the jitter buffer. */
             int sub_frames = n / (int)USRP_AUDIO_FRAMES;
             for (int i = 0; i < sub_frames; i++)
-                jitter_buffer_push(ctx->jb,
-                                   pkt->seq + (uint32_t)i,
-                                   pcm + i * (int)USRP_AUDIO_FRAMES);
+                jitter_buffer_push(ctx->jb, pcm + i * (int)USRP_AUDIO_FRAMES);
         }
     }
 }
@@ -260,9 +256,10 @@ static void *playback_thread_fn(void *arg)
         }
         prev_output_active = output_active;
 
-        /* Always pull from the jitter buffer to keep the playout window
-         * advancing.  If the cursor stalls while the network keeps pushing,
-         * incoming frames overflow the depth window and are dropped as late. */
+        /* Always drain the jitter buffer, even while output is inactive
+         * (silence is discarded below in that case) -- this is what keeps
+         * the FIFO from growing unbounded latency during the watchdog's
+         * deferred-PTT window; see watchdog.c's ptt_ready_ts. */
         (void)jitter_buffer_pull(ctx->jb, jb_frame);
 
         const int16_t *to_write = silence;
@@ -359,9 +356,11 @@ int main(int argc, char *argv[])
     /* ── init: audio processing chains ── */
     if (audio_proc_create(&in_proc,
                           cfg.audio.input_highpass,
+                          cfg.audio.input_bandpass,
                           cfg.audio.input_gain_db)  != 0) goto fail;
     if (audio_proc_create(&out_proc,
                           cfg.audio.output_highpass,
+                          cfg.audio.output_bandpass,
                           cfg.audio.output_gain_db) != 0) goto fail;
 
     /* ── init: audio trim ── */

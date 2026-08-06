@@ -52,9 +52,19 @@ GW_DEPS  = $(GW_OBJS:.o=.d)
 GW_LIBS  = $(shell pkg-config --libs opus libsystemd) -lm
 GATEWAY  = $(BUILDDIR)/opus-gateway
 
+# ── tests ────────────────────────────────────────────────────────────────────
+
+JB_TEST      = $(BUILDDIR)/tests/jitter_buffer_test
+JB_TEST_OBJS = $(BUILDDIR)/src/jitter_buffer.o
+JB_TEST_DEPS = $(BUILDDIR)/tests/jitter_buffer_test.d $(JB_TEST_OBJS:.o=.d)
+
+AP_TEST      = $(BUILDDIR)/tests/audio_processing_test
+AP_TEST_OBJS = $(BUILDDIR)/src/audio_processing.o
+AP_TEST_DEPS = $(BUILDDIR)/tests/audio_processing_test.d $(AP_TEST_OBJS:.o=.d)
+
 # ── rules ─────────────────────────────────────────────────────────────────────
 
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall check
 
 all: $(TARGET) $(REFLECTOR) $(GATEWAY)
 
@@ -67,6 +77,21 @@ $(REFLECTOR): $(REFL_OBJS)
 $(GATEWAY): $(GW_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(GW_LIBS)
 
+$(BUILDDIR)/tests/%.o: tests/%.c
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) -I$(VENDORDIR) -MMD -MP -c -o $@ $<
+
+$(JB_TEST): $(BUILDDIR)/tests/jitter_buffer_test.o $(JB_TEST_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ -lpthread
+
+$(AP_TEST): $(BUILDDIR)/tests/audio_processing_test.o $(AP_TEST_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
+
+# Run from the repo root.
+check: $(JB_TEST) $(AP_TEST)
+	./$(JB_TEST)
+	./$(AP_TEST)
+
 # Application sources — include vendored headers, generate dependency files
 $(BUILDDIR)/src/%.o: src/%.c
 	@mkdir -p $(@D)
@@ -77,7 +102,7 @@ $(BUILDDIR)/$(VENDORDIR)/%.o: $(VENDORDIR)/%.c
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -Wno-unused-result -MMD -MP -c -o $@ $<
 
--include $(DEPFILES) $(REFL_DEPS) $(GW_DEPS)
+-include $(DEPFILES) $(REFL_DEPS) $(GW_DEPS) $(JB_TEST_DEPS) $(AP_TEST_DEPS)
 
 clean:
 	rm -rf $(BUILDDIR)

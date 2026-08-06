@@ -7,63 +7,55 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-#define MAX_SLOTS 16u   /* covers up to 320ms at 20ms/frame */
+/* Hard array bound, independent of the configured (usually smaller)
+ * overflow ceiling -- covers up to 320ms at 20ms/frame, comfortably above
+ * JITTER_CAPACITY_MAX_MS (250ms). */
+#define MAX_SLOTS 16u
 
 typedef struct {
-    uint32_t seq;
-    bool     valid;
-    int16_t  samples[USRP_AUDIO_FRAMES];
+    int16_t samples[USRP_AUDIO_FRAMES];
 } jb_slot_t;
 
 struct jitter_buffer {
     pthread_mutex_t  lock;
     jb_slot_t        slots[MAX_SLOTS];
-    unsigned int     depth_frames;  /* jitter_buffer_ms / 20 */
-    uint32_t         playout_seq;   /* next seq to deliver */
-    bool             seeded;        /* true after first push */
-    atomic_uint_least64_t late_count;
+    unsigned int     read_idx;        /* next slot to drain */
+    unsigned int     count;           /* frames currently buffered */
+    unsigned int     capacity_frames; /* overflow ceiling */
     atomic_uint_least64_t silence_count;
     atomic_uint_least64_t latched_silence_count;
     atomic_uint_least64_t hb_silence_count;
-    /* jitter estimation */
+    atomic_uint_least64_t overflow_count;
+    /* jitter estimation (diagnostic only, nothing is gated on it) */
     uint64_t         last_push_ts;
-    float            jitter_ms;
+    float             jitter_ms;
 };
 
-int jitter_buffer_create(jitter_buffer_t **jb, unsigned int depth_ms)
+int jitter_buffer_create(jitter_buffer_t **jb, unsigned int capacity_ms)
 {
-    if (depth_ms < JITTER_BUF_MIN_MS) depth_ms = JITTER_BUF_MIN_MS;
-    if (depth_ms > JITTER_BUF_MAX_MS) depth_ms = JITTER_BUF_MAX_MS;
+    if (capacity_ms < JITTER_CAPACITY_MIN_MS) capacity_ms = JITTER_CAPACITY_MIN_MS;
+    if (capacity_ms > JITTER_CAPACITY_MAX_MS) capacity_ms = JITTER_CAPACITY_MAX_MS;
 
     jitter_buffer_t *self = calloc(1, sizeof(*self));
     if (!self) return -1;
 
     pthread_mutex_init(&self->lock, NULL);
-    self->depth_frames = (depth_ms + 19u) / 20u;
-    if (self->depth_frames > MAX_SLOTS) self->depth_frames = MAX_SLOTS;
-    atomic_init(&self->late_count, 0);
+    self->capacity_frames = (capacity_ms + 19u) / 20u;
+    if (self->capacity_frames > MAX_SLOTS) self->capacity_frames = MAX_SLOTS;
     atomic_init(&self->silence_count, 0);
     atomic_init(&self->latched_silence_count, 0);
     atomic_init(&self->hb_silence_count, 0);
+    atomic_init(&self->overflow_count, 0);
     *jb = self;
     return 0;
 }
 
-void jitter_buffer_push(jitter_buffer_t *jb, uint32_t seq,
-                        const int16_t *samples)
+void jitter_buffer_push(jitter_buffer_t *jb, const int16_t *samples)
 {
     uint64_t now = monotonic_ms();
 
     pthread_mutex_lock(&jb->lock);
 
-    if (!jb->seeded) {
-        /* Seed playout cursor so first frame plays after depth_frames * 20ms. */
-        jb->playout_seq = seq;
-        jb->seeded      = true;
-        jb->last_push_ts = now;
-    }
-
-    /* Jitter estimate: deviation from expected 20ms inter-packet arrival. */
     if (jb->last_push_ts > 0) {
         float gap = (float)(now - jb->last_push_ts);
         float dev = gap - 20.0f;
@@ -72,24 +64,17 @@ void jitter_buffer_push(jitter_buffer_t *jb, uint32_t seq,
     }
     jb->last_push_ts = now;
 
-    /* Discard packets that have already passed the playout cursor. */
-    if ((int32_t)(seq - jb->playout_seq) < 0) {
-        pthread_mutex_unlock(&jb->lock);
-        atomic_fetch_add(&jb->late_count, 1);
-        return;
+    if (jb->count >= jb->capacity_frames) {
+        /* At capacity: drop the oldest frame to make room for this one --
+         * prefer fresh audio over stale backlog. */
+        jb->read_idx = (jb->read_idx + 1u) % MAX_SLOTS;
+        jb->count--;
+        atomic_fetch_add(&jb->overflow_count, 1);
     }
 
-    /* Discard packets too far ahead (outside buffer window). */
-    if ((int32_t)(seq - jb->playout_seq) >= (int32_t)jb->depth_frames) {
-        pthread_mutex_unlock(&jb->lock);
-        atomic_fetch_add(&jb->late_count, 1);
-        return;
-    }
-
-    unsigned int idx = seq % MAX_SLOTS;
-    jb->slots[idx].seq   = seq;
-    jb->slots[idx].valid = true;
-    memcpy(jb->slots[idx].samples, samples, USRP_AUDIO_BYTES);
+    unsigned int write_idx = (jb->read_idx + jb->count) % MAX_SLOTS;
+    memcpy(jb->slots[write_idx].samples, samples, USRP_AUDIO_BYTES);
+    jb->count++;
 
     pthread_mutex_unlock(&jb->lock);
 }
@@ -98,19 +83,18 @@ bool jitter_buffer_pull(jitter_buffer_t *jb, int16_t *samples_out)
 {
     pthread_mutex_lock(&jb->lock);
 
-    unsigned int idx = jb->playout_seq % MAX_SLOTS;
-    bool real = false;
-
-    if (jb->slots[idx].valid && jb->slots[idx].seq == jb->playout_seq) {
-        memcpy(samples_out, jb->slots[idx].samples, USRP_AUDIO_BYTES);
-        jb->slots[idx].valid = false;
+    bool real;
+    if (jb->count > 0) {
+        memcpy(samples_out, jb->slots[jb->read_idx].samples, USRP_AUDIO_BYTES);
+        jb->read_idx = (jb->read_idx + 1u) % MAX_SLOTS;
+        jb->count--;
         real = true;
     } else {
         memset(samples_out, 0, USRP_AUDIO_BYTES);
         atomic_fetch_add(&jb->silence_count, 1);
+        real = false;
     }
 
-    jb->playout_seq++;
     pthread_mutex_unlock(&jb->lock);
     return real;
 }
@@ -118,8 +102,8 @@ bool jitter_buffer_pull(jitter_buffer_t *jb, int16_t *samples_out)
 void jitter_buffer_flush(jitter_buffer_t *jb)
 {
     pthread_mutex_lock(&jb->lock);
-    memset(jb->slots, 0, sizeof(jb->slots));
-    jb->seeded = false;
+    jb->read_idx = 0;
+    jb->count    = 0;
     pthread_mutex_unlock(&jb->lock);
 }
 
@@ -130,9 +114,9 @@ float jitter_buffer_estimate_ms(const jitter_buffer_t *jb)
     return jb->jitter_ms;
 }
 
-uint64_t jitter_buffer_late_count(jitter_buffer_t *jb)
+uint64_t jitter_buffer_overflow_count(jitter_buffer_t *jb)
 {
-    return atomic_exchange(&jb->late_count, 0);
+    return atomic_exchange(&jb->overflow_count, 0);
 }
 
 void jitter_buffer_reset_silence_count(jitter_buffer_t *jb)

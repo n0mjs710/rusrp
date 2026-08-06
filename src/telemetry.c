@@ -28,7 +28,7 @@ int telemetry_create(telemetry_t **tel, const config_t *cfg)
 #define STAT_OUTPUT_LEVELS   (1u << 2)  /* out=Xpk/Yrms dBFS */
 #define STAT_ACTIVE_FLAGS    (1u << 3)  /* input_active= output_active= */
 #define STAT_INPUT_PATH      (1u << 4)  /* overruns= */
-#define STAT_OUTPUT_PATH     (1u << 5)  /* jitter= late= silence= underruns= */
+#define STAT_OUTPUT_PATH     (1u << 5)  /* jitter= overflow= silence= underruns= */
 #define STAT_IN_CLIPS        (1u << 6)  /* clips= (input path) */
 #define STAT_OUT_CLIPS       (1u << 7)  /* clips= (output path) */
 
@@ -39,7 +39,7 @@ static void log_status(int priority, const char *label,
                        float out_peak, float out_rms,
                        bool  input_active, bool output_active,
                        float jitter,
-                       uint64_t late, uint64_t silence,
+                       uint64_t overflow, uint64_t silence,
                        uint64_t overruns, uint64_t underruns,
                        uint64_t in_clips, uint64_t out_clips)
 {
@@ -66,9 +66,9 @@ static void log_status(int priority, const char *label,
                       " clips=%llu", (unsigned long long)in_clips);
     if (flags & STAT_OUTPUT_PATH)
         n += snprintf(buf + n, sizeof(buf) - n,
-                      " jitter=%.1fms late=%llu silence=%llu underruns=%llu",
+                      " jitter=%.1fms overflow=%llu silence=%llu underruns=%llu",
                       jitter,
-                      (unsigned long long)late,
+                      (unsigned long long)overflow,
                       (unsigned long long)silence,
                       (unsigned long long)underruns);
     if (flags & STAT_OUT_CLIPS)
@@ -115,13 +115,13 @@ void telemetry_output_end(telemetry_t *tel, audio_alsa_t *alsa,
     if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
     uint64_t out_clips  = out_proc ? audio_proc_clip_count(out_proc)           : 0;
     float    jitter     = jb       ? jitter_buffer_estimate_ms(jb)             : 0.0f;
-    uint64_t late       = jb       ? jitter_buffer_late_count(jb)              : 0;
+    uint64_t overflow   = jb       ? jitter_buffer_overflow_count(jb)          : 0;
     uint64_t tx_silence = jb       ? jitter_buffer_latched_silence_count(jb)   : 0;
     log_status(LOG_INFO, "output-end",
                STAT_DURATION | STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
                dur_ms,
                0.0f, 0.0f, out_peak, out_rms,
-               false, false, jitter, late, tx_silence, 0, underruns, 0, out_clips);
+               false, false, jitter, overflow, tx_silence, 0, underruns, 0, out_clips);
     if (out_proc) audio_proc_reset_levels(out_proc);
 }
 
@@ -149,7 +149,7 @@ void telemetry_log(telemetry_t *tel,
     bool input_active  = logic ? logic_hid_input_active(logic)  : false;
     bool output_active = logic ? logic_hid_output_active(logic) : false;
     float    jitter     = jb ? jitter_buffer_estimate_ms(jb) : 0.0f;
-    uint64_t late       = jb ? jitter_buffer_late_count(jb)  : 0;
+    uint64_t overflow   = jb ? jitter_buffer_overflow_count(jb) : 0;
     uint64_t hb_silence = jb ? jitter_buffer_hb_silence_count(jb) : 0;
     uint64_t overruns = 0, underruns = 0;
     if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
@@ -160,7 +160,7 @@ void telemetry_log(telemetry_t *tel,
                0,
                in_peak, in_rms, out_peak, out_rms,
                input_active, output_active,
-               jitter, late, hb_silence, overruns, underruns, 0, 0);
+               jitter, overflow, hb_silence, overruns, underruns, 0, 0);
 }
 
 void telemetry_destroy(telemetry_t *tel)

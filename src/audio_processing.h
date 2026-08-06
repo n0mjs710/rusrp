@@ -6,7 +6,8 @@
 
 typedef struct audio_proc audio_proc_t;
 
-int  audio_proc_create(audio_proc_t **p, bool enable_hpf, float gain_db);
+int  audio_proc_create(audio_proc_t **p, bool enable_hpf, bool enable_bandpass,
+                       float gain_db);
 
 /* Process samples in-place.  Clips are counted internally; read with
  * audio_proc_clip_count(). */
