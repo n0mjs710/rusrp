@@ -11,9 +11,9 @@
  * goes quiet for floor_timeout_ms; everyone else's traffic is dropped
  * meanwhile.
  *
- * Each repeater takes pcm or opus. Audio goes untouched to repeaters using
- * the talker's codec; for the others it is converted once (decode or encode)
- * and the result sent to all of them.
+ * Each repeater is pcm or opus (always sent that codec, converted if need be)
+ * or multi (sent whatever the talker sends). Audio is converted at most once
+ * per transmission, the result shared by every repeater that needs it.
  *
  * Usage: usrp-reflector [-c config] [-v]
  */
@@ -45,8 +45,9 @@
 #define NAME_LEN       32
 #define UNKNOWN_LOG_MS 30000
 
-typedef enum { CODEC_PCM, CODEC_OPUS } codec_t;
-static const char *const CODECS[] = { "pcm", "opus", NULL };
+typedef enum { CODEC_PCM, CODEC_OPUS, CODEC_MULTI } codec_t;
+static const char *const CODECS[] = { "pcm", "opus", "multi", NULL };
+#define TO(c) (1u << (c))
 
 typedef struct {
     char               name[NAME_LEN];
@@ -146,7 +147,7 @@ static bool resolve(const char *host, const char *port, struct sockaddr_in *out)
     return true;
 }
 
-/* name = listen_port host:port [pcm|opus] */
+/* name = listen_port host:port [pcm|opus|multi] */
 static void read_repeater(conf_t *c, const conf_entry_t *e)
 {
     if (n_rpt >= MAX_REPEATERS) {
@@ -163,7 +164,7 @@ static void read_repeater(conf_t *c, const conf_entry_t *e)
     if (nf < 2 || nf > 3
         || !conf_parse_ll(lport, &l) || l < 1 || l > 65535
         || !(colon = strrchr(host, ':'))) {
-        conf_err(c, e->line, "%s: expected 'listen_port host:port [pcm|opus]', got '%s'",
+        conf_err(c, e->line, "%s: expected 'listen_port host:port [pcm|opus|multi]', got '%s'",
                  e->key, e->value);
         return;
     }
@@ -171,7 +172,7 @@ static void read_repeater(conf_t *c, const conf_entry_t *e)
     while (CODECS[ci] && strcmp(CODECS[ci], codec) != 0)
         ci++;
     if (!CODECS[ci]) {
-        conf_err(c, e->line, "%s: codec '%s' is not pcm or opus", e->key, codec);
+        conf_err(c, e->line, "%s: codec '%s' is not pcm, opus or multi", e->key, codec);
         return;
     }
     *colon = '\0';
@@ -288,10 +289,11 @@ static void forward(int from, const uint8_t *buf, size_t n)
             send_to(i, buf, n);
 }
 
-static void send_codec(int from, codec_t codec, const uint8_t *buf, size_t n)
+/* to: a set of TO(codec) bits */
+static void send_codec(int from, unsigned to, const uint8_t *buf, size_t n)
 {
     for (int i = 0; i < n_rpt; i++)
-        if (i != from && rpt[i].codec == codec)
+        if (i != from && (to & TO(rpt[i].codec)))
             send_to(i, buf, n);
 }
 
@@ -319,12 +321,13 @@ static uint32_t pcm_next;                /* next PCM seq expected */
 static bool     pcm_synced;
 static uint32_t opus_next;               /* next Opus seq expected */
 static bool     opus_synced;
+static bool     stream_opus;             /* the talker has sent Opus audio */
 
 static void codec_reset(void)
 {
     opus_codec_reset(g_opus);
     enc_n = 0;
-    pcm_synced = opus_synced = false;
+    pcm_synced = opus_synced = stream_opus = false;
 }
 
 static void enc_send(int from)
@@ -336,7 +339,7 @@ static void enc_send(int from)
         return;
     uint8_t buf[USRP_HEADER_LEN + OPUS_MAX_FRAME_BYTES];
     size_t n = usrp_build_opus_voice(buf, enc_seq, 1, opus, (size_t)len);
-    send_codec(from, CODEC_OPUS, buf, n);
+    send_codec(from, TO(CODEC_OPUS), buf, n);
 }
 
 static void enc_add(int from, const int16_t *frame, uint32_t seq)
@@ -388,7 +391,7 @@ static void send_pcm_frames(int from, const int16_t *pcm, int samples, uint32_t 
     uint8_t buf[USRP_PKT_LEN];
     for (int k = 0; k < samples / (int)FRAME; k++) {
         usrp_build_voice(buf, seq + (uint32_t)k, 1, pcm + k * FRAME);
-        send_codec(from, CODEC_PCM, buf, sizeof(buf));
+        send_codec(from, TO(CODEC_PCM), buf, sizeof(buf));
     }
 }
 
@@ -424,20 +427,40 @@ static void dec_push(int from, const usrp_packet_t *p)
     opus_synced = true;
 }
 
-/* Sends the holder's packet on: as is to its own codec, converted to the other.
- * An Opus talker keys with a PCM silence frame; that goes to everyone as is. */
+/* Each target gets the unkey of its own codec: a PCM silence frame or a bare
+ * Opus header; multi gets the talker's. */
+static void send_unkey(int from, uint32_t seq)
+{
+    static const uint8_t none[1];
+    uint8_t pcm[USRP_PKT_LEN], opus[USRP_HEADER_LEN];
+    usrp_build_key(pcm, seq, 0);
+    usrp_build_opus_voice(opus, seq, 0, none, 0);
+    unsigned to_opus = TO(CODEC_OPUS) | (stream_opus ? TO(CODEC_MULTI) : 0);
+    send_codec(from, ~to_opus, pcm, sizeof(pcm));
+    send_codec(from, to_opus, opus, sizeof(opus));
+}
+
+/* Sends the holder's packet on: as is to repeaters taking that codec, converted
+ * once for the rest. A stream is Opus from its first Opus packet; PCM still
+ * waiting to be encoded is dropped then (older senders key with a PCM frame). */
 static void relay(int from, const usrp_packet_t *p, const uint8_t *buf, size_t n)
 {
     if (!p->keyup) {
-        enc_flush(from);
-        forward(from, buf, n);
-    } else if (p->type == USRP_TYPE_OPUS && has_target(from, CODEC_PCM)) {
-        send_codec(from, CODEC_OPUS, buf, n);
-        dec_push(from, p);
-    } else if (p->type == USRP_TYPE_VOICE && n >= USRP_PKT_LEN
-               && rpt[from].codec == CODEC_PCM && has_target(from, CODEC_OPUS)) {
-        send_codec(from, CODEC_PCM, buf, n);
-        enc_push(from, p->audio, p->seq);
+        if (!stream_opus)
+            enc_flush(from);
+        send_unkey(from, p->seq);
+    } else if (p->type == USRP_TYPE_OPUS && p->opus_len > 0) {
+        if (!stream_opus) {
+            stream_opus = true;
+            enc_n = 0;
+        }
+        send_codec(from, TO(CODEC_OPUS) | TO(CODEC_MULTI), buf, n);
+        if (has_target(from, CODEC_PCM))
+            dec_push(from, p);
+    } else if (p->type == USRP_TYPE_VOICE && n >= USRP_PKT_LEN && !stream_opus) {
+        send_codec(from, TO(CODEC_PCM) | TO(CODEC_MULTI), buf, n);
+        if (has_target(from, CODEC_OPUS))
+            enc_push(from, p->audio, p->seq);
     } else {
         forward(from, buf, n);
     }
@@ -452,7 +475,8 @@ static uint32_t holder_seq;
 
 static void floor_release(const char *why)
 {
-    logmsg("UNKEY %s (%s, %.1f s, %u packets)", rpt[holder].name, why,
+    logmsg("UNKEY %s %s (%s, %.1f s, %u packets)", rpt[holder].name,
+           stream_opus ? "opus" : "pcm", why,
            (double)(now_ms() - floor_start_ms) / 1000.0, floor_pkts);
     holder = -1;
 }
@@ -490,7 +514,7 @@ static void handle_packet(int s, const uint8_t *buf, size_t n, const struct sock
         floor_start_ms = now;
         floor_pkts = 0;
         codec_reset();
-        logmsg("KEY %s", r->name);
+        logmsg("KEY %s %s", r->name, pkt.type == USRP_TYPE_OPUS ? "opus" : "pcm");
     }
     if (holder != i) {
         if (keyed && holder >= 0)
@@ -512,10 +536,9 @@ static void check_floor_timeout(void)
 {
     if (holder < 0 || now_ms() - rpt[holder].last_rx_ms < cfg.floor_timeout_ms)
         return;
-    enc_flush(holder);
-    uint8_t buf[USRP_PKT_LEN];
-    usrp_build_key(buf, holder_seq + 1, 0);
-    forward(holder, buf, sizeof(buf));
+    if (!stream_opus)
+        enc_flush(holder);
+    send_unkey(holder, holder_seq + 1);
     floor_release("timeout");
 }
 
