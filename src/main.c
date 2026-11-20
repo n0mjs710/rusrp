@@ -21,7 +21,7 @@
 #include <systemd/sd-journal.h>
 #include <systemd/sd-daemon.h>
 
-#define DEFAULT_CONFIG "/etc/rusrp/rusrp.toml"
+#define DEFAULT_CONFIG "/etc/rusrp/rusrp.conf"
 
 static atomic_bool g_stop  = ATOMIC_VAR_INIT(false);
 static atomic_int  g_floor = ATOMIC_VAR_INIT(FLOOR_IDLE);

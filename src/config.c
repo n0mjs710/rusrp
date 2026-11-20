@@ -1,5 +1,7 @@
 #include "config.h"
-#include "toml.h"
+#include "conf.h"
+
+#include <stddef.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,52 +47,6 @@ void config_defaults(config_t *cfg)
 }
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
-
-static void read_str(toml_table_t *tbl, const char *key,
-                     char *dst, size_t dstsz)
-{
-    toml_datum_t d = toml_string_in(tbl, key);
-    if (d.ok) {
-        strncpy(dst, d.u.s, dstsz - 1);
-        dst[dstsz - 1] = '\0';
-        free(d.u.s);
-    }
-}
-
-static void read_uint16(toml_table_t *tbl, const char *key, uint16_t *dst)
-{
-    toml_datum_t d = toml_int_in(tbl, key);
-    if (d.ok && d.u.i > 0 && d.u.i <= 65535)
-        *dst = (uint16_t)d.u.i;
-}
-
-static void read_uint(toml_table_t *tbl, const char *key, unsigned int *dst)
-{
-    toml_datum_t d = toml_int_in(tbl, key);
-    if (d.ok && d.u.i >= 0)
-        *dst = (unsigned int)d.u.i;
-}
-
-static void read_int(toml_table_t *tbl, const char *key, int *dst)
-{
-    toml_datum_t d = toml_int_in(tbl, key);
-    if (d.ok)
-        *dst = (int)d.u.i;
-}
-
-static void read_float(toml_table_t *tbl, const char *key, float *dst)
-{
-    toml_datum_t d = toml_double_in(tbl, key);
-    if (d.ok)
-        *dst = (float)d.u.d;
-}
-
-static void read_bool(toml_table_t *tbl, const char *key, bool *dst)
-{
-    toml_datum_t d = toml_bool_in(tbl, key);
-    if (d.ok)
-        *dst = (bool)d.u.b;
-}
 
 /* Round ms to the nearest 20 ms frame boundary and clamp to 0–260 ms.
  * Logs a warning if the value was changed so the user knows what was applied. */
@@ -161,97 +117,71 @@ static int validate(const config_t *cfg)
 
 /* ── public ───────────────────────────────────────────────────────────────── */
 
+#define F(sec, key, type, member) \
+    { sec, #key, type, offsetof(config_t, member), sizeof(((config_t *)0)->member), NULL }
+#define FC(sec, key, member, choices) \
+    { sec, #key, CONF_CHOICE, offsetof(config_t, member), 0, choices }
+
+static const char *const CODECS[] = { "pcm", "opus", NULL };                   /* audio_codec_t */
+static const char *const LEVELS[] = { "debug", "info", "warn", "error", NULL }; /* log_level_t */
+
+static const conf_field_t FIELDS[] = {
+    F("usrp", remote_host,  CONF_STR,  usrp.remote_host),
+    F("usrp", remote_port,  CONF_PORT, usrp.remote_port),
+    F("usrp", local_port,   CONF_PORT, usrp.local_port),
+    F("usrp", bind_address, CONF_STR,  usrp.bind_address),
+
+    F("audio", alsa_device,            CONF_STR,   audio.alsa_device),
+    F("audio", input_gain_db,          CONF_FLOAT, audio.input_gain_db),
+    F("audio", output_gain_db,         CONF_FLOAT, audio.output_gain_db),
+    F("audio", input_highpass,         CONF_BOOL,  audio.input_highpass),
+    F("audio", output_highpass,        CONF_BOOL,  audio.output_highpass),
+    F("audio", input_bandpass,         CONF_BOOL,  audio.input_bandpass),
+    F("audio", output_bandpass,        CONF_BOOL,  audio.output_bandpass),
+    F("audio", input_leading_trim_ms,  CONF_UINT,  audio.input_leading_trim_ms),
+    F("audio", output_leading_trim_ms, CONF_UINT,  audio.output_leading_trim_ms),
+    FC("audio", codec, audio.codec, CODECS),
+    F("audio", opus_bitrate,           CONF_INT,   audio.opus_bitrate),
+    F("audio", opus_frame_ms,          CONF_INT,   audio.opus_frame_ms),
+
+    F("logic", hid_device,         CONF_STR,  logic.hid_device),
+    F("logic", output_active_gpio, CONF_INT,  logic.output_active_gpio),
+    F("logic", input_active_low,   CONF_BOOL, logic.input_active_low),
+    F("logic", output_active_low,  CONF_BOOL, logic.output_active_low),
+    F("logic", half_duplex,        CONF_BOOL, logic.half_duplex),
+
+    F("network", jitter_buffer_ms, CONF_UINT, network.jitter_buffer_ms),
+
+    F("watchdog", network_timeout_ms,        CONF_UINT, watchdog.network_timeout_ms),
+    F("watchdog", output_active_tail_ms,     CONF_UINT, watchdog.output_active_tail_ms),
+    F("watchdog", startup_output_inhibit_ms, CONF_UINT, watchdog.startup_output_inhibit_ms),
+    F("watchdog", unkey_debounce_ms,         CONF_UINT, watchdog.unkey_debounce_ms),
+
+    FC("logging", level, logging.level, LEVELS),
+    F("logging", status_interval_sec, CONF_UINT, logging.status_interval_sec),
+    { 0 }
+};
+
 int config_load(config_t *cfg, const char *path)
 {
     config_defaults(cfg);
 
-    FILE *fp = fopen(path, "r");
-    if (!fp) {
+    conf_t c;
+    if (conf_read(&c, path) != 0) {
         sd_journal_print(LOG_ERR, "config: cannot open %s: %m", path);
+        fprintf(stderr, "config: cannot open %s\n", path);
         return -1;
     }
-
-    char errbuf[256];
-    toml_table_t *root = toml_parse_file(fp, errbuf, sizeof(errbuf));
-    fclose(fp);
-
-    if (!root) {
-        sd_journal_print(LOG_ERR, "config: parse error in %s: %s", path, errbuf);
+    int errors = conf_apply(&c, FIELDS, cfg, NULL);
+    conf_free(&c);
+    if (errors) {
+        sd_journal_print(LOG_ERR, "config: %d error(s) in %s", errors, path);
         return -1;
-    }
-
-    toml_table_t *t;
-
-    if ((t = toml_table_in(root, "usrp"))) {
-        read_str(t,    "remote_host",  cfg->usrp.remote_host,
-                 sizeof(cfg->usrp.remote_host));
-        read_uint16(t, "remote_port",  &cfg->usrp.remote_port);
-        read_uint16(t, "local_port",   &cfg->usrp.local_port);
-        read_str(t,    "bind_address", cfg->usrp.bind_address,
-                 sizeof(cfg->usrp.bind_address));
-    }
-
-    if ((t = toml_table_in(root, "audio"))) {
-        read_str(t,   "alsa_device",     cfg->audio.alsa_device,
-                 sizeof(cfg->audio.alsa_device));
-        read_float(t, "input_gain_db",   &cfg->audio.input_gain_db);
-        read_float(t, "output_gain_db",  &cfg->audio.output_gain_db);
-        read_bool(t,  "input_highpass",  &cfg->audio.input_highpass);
-        read_bool(t,  "output_highpass", &cfg->audio.output_highpass);
-        read_bool(t,  "input_bandpass",  &cfg->audio.input_bandpass);
-        read_bool(t,  "output_bandpass", &cfg->audio.output_bandpass);
-        read_uint(t,  "input_leading_trim_ms",  &cfg->audio.input_leading_trim_ms);
-        read_uint(t,  "output_leading_trim_ms", &cfg->audio.output_leading_trim_ms);
-        toml_datum_t codec_d = toml_string_in(t, "codec");
-        if (codec_d.ok) {
-            if (strcmp(codec_d.u.s, "opus") == 0)
-                cfg->audio.codec = AUDIO_CODEC_OPUS;
-            else if (strcmp(codec_d.u.s, "pcm") == 0)
-                cfg->audio.codec = AUDIO_CODEC_PCM;
-            else
-                fprintf(stderr, "config: unknown codec \"%s\"; using pcm\n", codec_d.u.s);
-            free(codec_d.u.s);
-        }
-        read_int(t, "opus_bitrate",  &cfg->audio.opus_bitrate);
-        read_int(t, "opus_frame_ms", &cfg->audio.opus_frame_ms);
     }
 
     cfg->audio.input_leading_trim_ms  = round_trim_ms(cfg->audio.input_leading_trim_ms,
                                                        "audio.input_leading_trim_ms");
     cfg->audio.output_leading_trim_ms = round_trim_ms(cfg->audio.output_leading_trim_ms,
                                                        "audio.output_leading_trim_ms");
-
-    if ((t = toml_table_in(root, "logic"))) {
-        read_str(t,  "hid_device",         cfg->logic.hid_device,
-                 sizeof(cfg->logic.hid_device));
-        read_int(t,  "output_active_gpio", &cfg->logic.output_active_gpio);
-        read_bool(t, "input_active_low",   &cfg->logic.input_active_low);
-        read_bool(t, "output_active_low",  &cfg->logic.output_active_low);
-        read_bool(t, "half_duplex",        &cfg->logic.half_duplex);
-    }
-
-    if ((t = toml_table_in(root, "network")))
-        read_uint(t, "jitter_buffer_ms", &cfg->network.jitter_buffer_ms);
-
-    if ((t = toml_table_in(root, "watchdog"))) {
-        read_uint(t, "network_timeout_ms",        &cfg->watchdog.network_timeout_ms);
-        read_uint(t, "output_active_tail_ms",     &cfg->watchdog.output_active_tail_ms);
-        read_uint(t, "startup_output_inhibit_ms", &cfg->watchdog.startup_output_inhibit_ms);
-        read_uint(t, "unkey_debounce_ms",         &cfg->watchdog.unkey_debounce_ms);
-    }
-
-    if ((t = toml_table_in(root, "logging"))) {
-        read_uint(t, "status_interval_sec", &cfg->logging.status_interval_sec);
-        toml_datum_t d = toml_string_in(t, "level");
-        if (d.ok) {
-            if      (strcmp(d.u.s, "debug") == 0) cfg->logging.level = LOG_LEVEL_DEBUG;
-            else if (strcmp(d.u.s, "info")  == 0) cfg->logging.level = LOG_LEVEL_INFO;
-            else if (strcmp(d.u.s, "warn")  == 0) cfg->logging.level = LOG_LEVEL_WARN;
-            else if (strcmp(d.u.s, "error") == 0) cfg->logging.level = LOG_LEVEL_ERROR;
-            free(d.u.s);
-        }
-    }
-
-    toml_free(root);
     return validate(cfg);
 }

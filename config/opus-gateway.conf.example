@@ -11,20 +11,20 @@
 
 [mmdvm]
 # Where opus-gateway listens for packets from MMDVMHost.
-local_address = "127.0.0.1"
+local_address = 127.0.0.1
 local_port    = 34001
 
 # Where MMDVMHost is listening (the LocalAddress/LocalPort from MMDVM.ini [FM]).
-rpt_address   = "127.0.0.1"
+rpt_address   = 127.0.0.1
 rpt_port      = 32001
 
 [network]
 # The rusrp peer or usrp-reflector to send Opus USRP to.
-remote_host   = "198.51.100.10"
+remote_host   = 198.51.100.10
 remote_port   = 34001
 
 # Local socket for the network side of opus-gateway.
-bind_address  = "0.0.0.0"
+bind_address  = 0.0.0.0
 local_port    = 34002
 
 [audio]

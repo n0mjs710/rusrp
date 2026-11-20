@@ -12,12 +12,12 @@ LDFLAGS += -pie
 LDLIBS  += $(shell pkg-config --libs alsa libsystemd opus) -lm -lpthread
 
 BUILDDIR  = build
-VENDORDIR = vendor/tomlc99
 
 # ── rusrp ────────────────────────────────────────────────────────────────────
 
 SRCS = src/main.c \
        src/config.c \
+       src/conf.c \
        src/usrp_protocol.c \
        src/usrp_transport.c \
        src/audio_alsa.c \
@@ -27,8 +27,7 @@ SRCS = src/main.c \
        src/jitter_buffer.c \
        src/telemetry.c \
        src/watchdog.c \
-       src/opus_codec.c \
-       $(VENDORDIR)/toml.c
+       src/opus_codec.c
 
 OBJS     = $(patsubst %.c,$(BUILDDIR)/%.o,$(SRCS))
 DEPFILES = $(OBJS:.o=.d)
@@ -46,7 +45,7 @@ REFLECTOR = $(BUILDDIR)/usrp-reflector
 GW_SRCS = src/opus_gateway.c \
            src/usrp_protocol.c \
            src/opus_codec.c \
-           $(VENDORDIR)/toml.c
+           src/conf.c
 GW_OBJS  = $(patsubst %.c,$(BUILDDIR)/%.o,$(GW_SRCS))
 GW_DEPS  = $(GW_OBJS:.o=.d)
 GW_LIBS  = $(shell pkg-config --libs opus libsystemd) -lm
@@ -61,6 +60,10 @@ JB_TEST_DEPS = $(BUILDDIR)/tests/jitter_buffer_test.d $(JB_TEST_OBJS:.o=.d)
 AP_TEST      = $(BUILDDIR)/tests/audio_processing_test
 AP_TEST_OBJS = $(BUILDDIR)/src/audio_processing.o
 AP_TEST_DEPS = $(BUILDDIR)/tests/audio_processing_test.d $(AP_TEST_OBJS:.o=.d)
+
+CF_TEST      = $(BUILDDIR)/tests/conf_test
+CF_TEST_OBJS = $(BUILDDIR)/src/conf.o $(BUILDDIR)/src/config.o
+CF_TEST_DEPS = $(BUILDDIR)/tests/conf_test.d $(CF_TEST_OBJS:.o=.d)
 
 # ── rules ─────────────────────────────────────────────────────────────────────
 
@@ -79,7 +82,7 @@ $(GATEWAY): $(GW_OBJS)
 
 $(BUILDDIR)/tests/%.o: tests/%.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -I$(VENDORDIR) -MMD -MP -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 $(JB_TEST): $(BUILDDIR)/tests/jitter_buffer_test.o $(JB_TEST_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ -lpthread
@@ -87,22 +90,20 @@ $(JB_TEST): $(BUILDDIR)/tests/jitter_buffer_test.o $(JB_TEST_OBJS)
 $(AP_TEST): $(BUILDDIR)/tests/audio_processing_test.o $(AP_TEST_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
+$(CF_TEST): $(BUILDDIR)/tests/conf_test.o $(CF_TEST_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(shell pkg-config --libs libsystemd)
+
 # Run from the repo root.
-check: $(JB_TEST) $(AP_TEST)
+check: $(JB_TEST) $(AP_TEST) $(CF_TEST)
 	./$(JB_TEST)
 	./$(AP_TEST)
+	./$(CF_TEST)
 
-# Application sources — include vendored headers, generate dependency files
 $(BUILDDIR)/src/%.o: src/%.c
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -I$(VENDORDIR) -MMD -MP -c -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
-# Vendor source — suppress upstream warnings we cannot fix
-$(BUILDDIR)/$(VENDORDIR)/%.o: $(VENDORDIR)/%.c
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -Wno-unused-result -MMD -MP -c -o $@ $<
-
--include $(DEPFILES) $(REFL_DEPS) $(GW_DEPS) $(JB_TEST_DEPS) $(AP_TEST_DEPS)
+-include $(DEPFILES) $(REFL_DEPS) $(GW_DEPS) $(JB_TEST_DEPS) $(AP_TEST_DEPS) $(CF_TEST_DEPS)
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -111,17 +112,17 @@ install: $(TARGET) $(REFLECTOR) $(GATEWAY)
 	install -Dm755 $(TARGET)                        $(DESTDIR)$(BINDIR)/rusrp
 	install -Dm755 $(REFLECTOR)                     $(DESTDIR)$(BINDIR)/usrp-reflector
 	install -Dm755 $(GATEWAY)                       $(DESTDIR)$(BINDIR)/opus-gateway
-	install -Dm644 config/rusrp.toml.example        $(DESTDIR)$(SYSCONFDIR)/rusrp/rusrp.toml.example
-	install -Dm644 config/opus_gateway.toml.example $(DESTDIR)$(SYSCONFDIR)/rusrp/opus_gateway.toml.example
+	install -Dm644 config/rusrp.conf.example        $(DESTDIR)$(SYSCONFDIR)/rusrp/rusrp.conf.example
+	install -Dm644 config/opus-gateway.conf.example $(DESTDIR)$(SYSCONFDIR)/rusrp/opus-gateway.conf.example
 	install -Dm644 systemd/rusrp.service     $(DESTDIR)$(UNITDIR)/rusrp.service
 	install -Dm644 udev/90-cm119a.rules      $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
 	@if [ -z "$(DESTDIR)" ]; then \
-		if [ ! -f $(SYSCONFDIR)/rusrp/rusrp.toml ]; then \
-			cp $(SYSCONFDIR)/rusrp/rusrp.toml.example $(SYSCONFDIR)/rusrp/rusrp.toml; \
-			echo "rusrp: installed default config at $(SYSCONFDIR)/rusrp/rusrp.toml"; \
-			echo "rusrp: edit $(SYSCONFDIR)/rusrp/rusrp.toml (set remote_host at minimum) before starting the service"; \
+		if [ ! -f $(SYSCONFDIR)/rusrp/rusrp.conf ]; then \
+			cp $(SYSCONFDIR)/rusrp/rusrp.conf.example $(SYSCONFDIR)/rusrp/rusrp.conf; \
+			echo "rusrp: installed default config at $(SYSCONFDIR)/rusrp/rusrp.conf"; \
+			echo "rusrp: edit $(SYSCONFDIR)/rusrp/rusrp.conf (set remote_host at minimum) before starting the service"; \
 		else \
-			echo "rusrp: existing config preserved at $(SYSCONFDIR)/rusrp/rusrp.toml"; \
+			echo "rusrp: existing config preserved at $(SYSCONFDIR)/rusrp/rusrp.conf"; \
 		fi; \
 	fi
 

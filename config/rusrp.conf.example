@@ -1,11 +1,11 @@
 [usrp]
-remote_host = "198.51.100.10"   # AllStarLink server IP
+remote_host = 198.51.100.10   # AllStarLink server IP
 remote_port = 34001
 local_port  = 32001
-bind_address = "0.0.0.0"
+bind_address = 0.0.0.0
 
 [audio]
-alsa_device     = "plughw:1,0"
+alsa_device     = plughw:1,0
 input_gain_db   = 0.0           # -12.0 to +12.0 dB
 output_gain_db  = 0.0
 input_highpass  = false         # 250 Hz HPF — blocks CTCSS/DCS
@@ -16,15 +16,15 @@ output_bandpass = false         # don't enable both *_highpass and *_bandpass on
 input_leading_trim_ms  = 0      # 0–260 ms, rounded to nearest 20 ms frame
 output_leading_trim_ms = 0
 
-# codec: "pcm" (default, standard ASL3 compatibility) or "opus"
+# codec: pcm (default, standard ASL3 compatibility) or opus
 # Opus mode requires usrp-reflector or a compatible server on the far end.
 # Recommended jitter_buffer_ms >= 120 when using Opus with frame_ms = 60.
-codec         = "pcm"
+codec         = pcm
 opus_bitrate  = 8000            # VBR target in bps (4000–64000); 8000 is transparent for narrowband FM
 opus_frame_ms = 60              # frame duration: 20, 40, or 60 ms; 60 ms reduces packet rate 3×
 
 [logic]
-hid_device         = "/dev/hidraw0"
+hid_device         = /dev/hidraw0
 output_active_gpio = 3          # CM119A GPIO3 (pin 13) — PTT
 input_active_low   = true       # input signal is active when pulled low
 output_active_low  = true       # output signal is active-low (open-collector driver)
@@ -40,5 +40,5 @@ startup_output_inhibit_ms = 2000  # suppress output at boot
 unkey_debounce_ms         = 0     # wait N ms before acting on unkey; absorbs brief keyup=0 gaps
 
 [logging]
-level               = "info"    # debug, info, warn, error
+level               = info    # debug, info, warn, error
 status_interval_sec = 10

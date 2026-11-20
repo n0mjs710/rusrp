@@ -15,12 +15,12 @@
  * PCM USRP peers (type-0) are also accepted on the receive path for
  * compatibility with nodes that do not use Opus.
  *
- * Usage: opus-gateway [-c config]   default: /etc/rusrp/opus-gateway.toml
+ * Usage: opus-gateway [-c config]   default: /etc/rusrp/opus-gateway.conf
  */
 
 #include "usrp_protocol.h"
 #include "opus_codec.h"
-#include "toml.h"
+#include "conf.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,10 +35,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <stddef.h>
 
 /* ── constants ───────────────────────────────────────────────────────────── */
 
-#define DEFAULT_CONFIG   "/etc/rusrp/opus-gateway.toml"
+#define DEFAULT_CONFIG   "/etc/rusrp/opus-gateway.conf"
 #define FM_MAX_PKT       1500
 #define TX_ACCUM_MAX     480     /* max Opus frame: 60 ms at 8 kHz */
 #define NET_MAX_PKT      (USRP_HEADER_LEN + USRP_OPUS_MAX_BYTES + 4)
@@ -75,25 +76,24 @@ typedef struct {
 static volatile bool g_stop = false;
 static void sig_handler(int sig) { (void)sig; g_stop = true; }
 
-/* ── TOML helpers (same pattern as config.c) ─────────────────────────────── */
+/* ── config file ─────────────────────────────────────────────────────────── */
 
-static void rd_str(toml_table_t *t, const char *k, char *dst, size_t n)
-{
-    toml_datum_t d = toml_string_in(t, k);
-    if (d.ok) { strncpy(dst, d.u.s, n - 1); dst[n - 1] = '\0'; free(d.u.s); }
-}
+#define F(sec, key, type, member) \
+    { sec, #key, type, offsetof(gw_config_t, member), sizeof(((gw_config_t *)0)->member), NULL }
 
-static void rd_u16(toml_table_t *t, const char *k, uint16_t *dst)
-{
-    toml_datum_t d = toml_int_in(t, k);
-    if (d.ok && d.u.i > 0 && d.u.i <= 65535) *dst = (uint16_t)d.u.i;
-}
-
-static void rd_int(toml_table_t *t, const char *k, int *dst)
-{
-    toml_datum_t d = toml_int_in(t, k);
-    if (d.ok) *dst = (int)d.u.i;
-}
+static const conf_field_t GW_FIELDS[] = {
+    F("mmdvm",   local_address, CONF_STR,  mmdvm.local_address),
+    F("mmdvm",   local_port,    CONF_PORT, mmdvm.local_port),
+    F("mmdvm",   rpt_address,   CONF_STR,  mmdvm.rpt_address),
+    F("mmdvm",   rpt_port,      CONF_PORT, mmdvm.rpt_port),
+    F("network", remote_host,   CONF_STR,  net.remote_host),
+    F("network", remote_port,   CONF_PORT, net.remote_port),
+    F("network", local_port,    CONF_PORT, net.local_port),
+    F("network", bind_address,  CONF_STR,  net.bind_address),
+    F("audio",   opus_bitrate,  CONF_INT,  audio.opus_bitrate),
+    F("audio",   opus_frame_ms, CONF_INT,  audio.opus_frame_ms),
+    { 0 }
+};
 
 static int gw_config_load(gw_config_t *cfg, const char *path)
 {
@@ -111,39 +111,15 @@ static int gw_config_load(gw_config_t *cfg, const char *path)
     cfg->audio.opus_bitrate  = 8000;
     cfg->audio.opus_frame_ms = 60;
 
-    FILE *fp = fopen(path, "r");
-    if (!fp) {
+    conf_t c;
+    if (conf_read(&c, path) != 0) {
         fprintf(stderr, "opus-gateway: cannot open %s: %s\n", path, strerror(errno));
         return -1;
     }
-
-    char errbuf[256];
-    toml_table_t *root = toml_parse_file(fp, errbuf, sizeof(errbuf));
-    fclose(fp);
-    if (!root) {
-        fprintf(stderr, "opus-gateway: config parse error: %s\n", errbuf);
+    int errors = conf_apply(&c, GW_FIELDS, cfg, NULL);
+    conf_free(&c);
+    if (errors)
         return -1;
-    }
-
-    toml_table_t *t;
-    if ((t = toml_table_in(root, "mmdvm"))) {
-        rd_str(t, "local_address", cfg->mmdvm.local_address, sizeof(cfg->mmdvm.local_address));
-        rd_u16(t, "local_port",    &cfg->mmdvm.local_port);
-        rd_str(t, "rpt_address",   cfg->mmdvm.rpt_address,   sizeof(cfg->mmdvm.rpt_address));
-        rd_u16(t, "rpt_port",      &cfg->mmdvm.rpt_port);
-    }
-    if ((t = toml_table_in(root, "network"))) {
-        rd_str(t, "remote_host",  cfg->net.remote_host,  sizeof(cfg->net.remote_host));
-        rd_u16(t, "remote_port",  &cfg->net.remote_port);
-        rd_u16(t, "local_port",   &cfg->net.local_port);
-        rd_str(t, "bind_address", cfg->net.bind_address, sizeof(cfg->net.bind_address));
-    }
-    if ((t = toml_table_in(root, "audio"))) {
-        rd_int(t, "opus_bitrate",  &cfg->audio.opus_bitrate);
-        rd_int(t, "opus_frame_ms", &cfg->audio.opus_frame_ms);
-    }
-
-    toml_free(root);
 
     int ok = 1;
     if (cfg->mmdvm.local_port == 0 || cfg->mmdvm.rpt_port == 0 ||

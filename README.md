@@ -68,7 +68,7 @@ Analog device                            AllStarLink server
 sudo apt-get install -y build-essential pkg-config libsystemd-dev libasound2-dev libopus-dev
 ```
 
-The TOML config parser ([tomlc99](https://github.com/cktan/tomlc99), MIT) is vendored in the repository — no separate install or download step needed.
+Config files are plain `[section]` / `key = value` text with `#` comments, the same format as usrp-rc. Values take no quotes; an unknown setting, a bad value or a duplicate is reported with its line number and stops startup.
 
 ## Building
 
@@ -86,7 +86,15 @@ sudo make install
 
 ## Configuration
 
-`sudo make install` places a starter config at `/etc/rusrp/rusrp.toml` on first install. On upgrades it is left untouched. An annotated reference copy is always at `/etc/rusrp/rusrp.toml.example`.
+`sudo make install` places a starter config at `/etc/rusrp/rusrp.conf` on first install. On upgrades it is left untouched. An annotated reference copy is always at `/etc/rusrp/rusrp.conf.example`.
+
+**Upgrading from a TOML config:** older releases read `/etc/rusrp/rusrp.toml`. Rename it and drop the quotes around values; the settings themselves are unchanged:
+
+```
+sudo sed -E 's/= *"([^"]*)"/= \1/' /etc/rusrp/rusrp.toml | sudo tee /etc/rusrp/rusrp.conf >/dev/null
+```
+
+Do the same for `opus-gateway.toml` → `opus-gateway.conf`. Convert before `make install`, or it installs the starter config as `rusrp.conf`.
 
 Key settings:
 
@@ -95,7 +103,7 @@ Key settings:
 | `[usrp]` | `remote_host` | IP of your ASL3 server |
 | `[usrp]` | `remote_port` | chan_usrp port on ASL3 (default 34001) |
 | `[usrp]` | `local_port` | UDP port to bind locally (default 32001) |
-| `[usrp]` | `bind_address` | Local IP to bind the UDP socket (default `"0.0.0.0"` — all interfaces; change only if the SBC has multiple NICs and you need to restrict traffic to one) |
+| `[usrp]` | `bind_address` | Local IP to bind the UDP socket (default `0.0.0.0` — all interfaces; change only if the SBC has multiple NICs and you need to restrict traffic to one) |
 | `[audio]` | `alsa_device` | ALSA device string — use `plughw:` prefix (e.g. `plughw:1,0`) |
 | `[audio]` | `input_gain_db` | Mic gain in dB (−12 to +12) |
 | `[audio]` | `input_highpass` | Enable 250 Hz HPF on captured audio (blocks CTCSS/DCS tones from the analog side) |
@@ -109,14 +117,14 @@ Key settings:
 | `[logic]` | `input_active_low` | `true` if the input signal is active when the line is pulled low (most hardware) |
 | `[logic]` | `output_active_low` | `true` if the output signal is active-low (open-collector driver — most hardware) |
 | `[logic]` | `half_duplex` | `true` to block the second direction until the first releases (first-come-first-served); useful when hardware or wireline configuration cannot cleanly handle simultaneous RX and TX |
-| `[audio]` | `codec` | `"pcm"` (default, standard ASL3) or `"opus"` (narrowband Opus, requires compatible server) |
+| `[audio]` | `codec` | `pcm` (default, standard ASL3) or `opus` (narrowband Opus, requires compatible server) |
 | `[audio]` | `opus_bitrate` | Opus VBR target in bps (4000–64000); default 8000. 8 kbps is transparent for 300–3000 Hz communications voice |
 | `[audio]` | `opus_frame_ms` | Opus frame duration: 20, 40, or 60 ms; default 60. 60 ms reduces packet rate 3× vs PCM |
 | `[network]` | `jitter_buffer_ms` | Two things at once: the overflow ceiling on the arrival-order jitter buffer (frames beyond this depth get dropped oldest-first during a sustained burst), and the delay `watchdog.c` waits after network keyup before asserting PTT. 40–250 ms; non-multiples of 20 round up to the next frame; recommend ≥ 120 ms in Opus mode with 60 ms frames |
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 | `[watchdog]` | `unkey_debounce_ms` | Wait N ms before acting on an unkey event; absorbs brief keyup=0 gaps from Asterisk bridging (0 = act immediately) |
 
-See `config/rusrp.toml.example` for all options with comments.
+See `config/rusrp.conf.example` for all options with comments.
 
 ### Audio leading trim
 
@@ -134,8 +142,8 @@ rusrp accesses hardware directly (ALSA, hidraw) and runs as root — either via 
 
 ```bash
 # Install places the binary, unit file, udev rule, and — on first install only —
-# a starter config at /etc/rusrp/rusrp.toml. Edit it before starting:
-sudo $EDITOR /etc/rusrp/rusrp.toml
+# a starter config at /etc/rusrp/rusrp.conf. Edit it before starting:
+sudo $EDITOR /etc/rusrp/rusrp.conf
 
 # Enable and start
 sudo systemctl enable --now rusrp
@@ -147,12 +155,12 @@ journalctl -u rusrp -f
 ### Testing / CLI
 
 ```bash
-sudo ./build/rusrp -c rusrp.toml
+sudo ./build/rusrp -c rusrp.conf
 ```
 
 ### Opus mode
 
-Set `codec = "opus"` in `[audio]` to use narrowband Opus instead of raw PCM. This requires a compatible server on the far end — either `usrp-reflector` (included) or a future Opus-aware ASL server.
+Set `codec = opus` in `[audio]` to use narrowband Opus instead of raw PCM. This requires a compatible server on the far end — either `usrp-reflector` (included) or a future Opus-aware ASL server.
 
 **Why Opus?** On challenged network paths (high jitter, limited bandwidth), PCM sends 320 bytes every 20 ms (~128 kbps raw). Opus at 8 kbps with 60 ms frames sends ~60 bytes every 60 ms — roughly 16× less traffic — with quality that is transparent over a ±5 kHz FM communications channel (300–3000 Hz passband).
 
@@ -161,9 +169,9 @@ Set `codec = "opus"` in `[audio]` to use narrowband Opus instead of raw PCM. Thi
 **Sequence numbers:** Each 60 ms Opus packet advances the sequence counter by 3 (one per 20 ms jitter buffer slot). The decoder splits the decoded 480-sample frame into three 160-sample sub-frames and pushes each to its corresponding jitter buffer slot.
 
 **Recommended settings for Opus mode:**
-```toml
+```ini
 [audio]
-codec           = "opus"
+codec           = opus
 opus_bitrate    = 8000    # 8 kbps VBR — transparent for communications voice
 opus_frame_ms   = 60      # 60 ms frames — 3× packet rate reduction vs PCM
 
@@ -183,7 +191,7 @@ sudo usrp-reflector
 sudo usrp-reflector -p 34001 -b 0.0.0.0
 
 # Point rusrp at the reflector
-# In rusrp.toml: remote_host = "<reflector IP>", remote_port = 34001
+# In rusrp.conf: remote_host = <reflector IP>, remote_port = 34001
 ```
 
 The reflector works for both PCM and Opus because it forwards raw UDP bytes without inspecting the audio payload — it only looks at the USRP header's `keyup` field for floor control. No header format changes were needed for Opus; the packet length from `recv()` implicitly carries the payload size for both types.
@@ -209,22 +217,22 @@ MMDVMHost's `MMDVM.ini` `[FM]` network settings must point at it:
 
 ```ini
 GatewayAddress=127.0.0.1
-GatewayPort=34001     # matches [mmdvm] local_port in opus-gateway.toml
+GatewayPort=34001     # matches [mmdvm] local_port in opus-gateway.conf
 LocalAddress=127.0.0.1
-LocalPort=32001       # matches [mmdvm] rpt_port in opus-gateway.toml
+LocalPort=32001       # matches [mmdvm] rpt_port in opus-gateway.conf
 ```
 
 ```bash
 # The installed file is the *.example* copy — rename/copy it before first run,
-# unlike rusrp.toml this isn't done for you on install.
-sudo cp /etc/rusrp/opus_gateway.toml.example /etc/rusrp/opus-gateway.toml
-sudo nano /etc/rusrp/opus-gateway.toml   # set [network] remote_host at minimum
+# unlike rusrp.conf this isn't done for you on install.
+sudo cp /etc/rusrp/opus-gateway.conf.example /etc/rusrp/opus-gateway.conf
+sudo nano /etc/rusrp/opus-gateway.conf   # set [network] remote_host at minimum
 
-sudo opus-gateway                        # uses /etc/rusrp/opus-gateway.toml
-sudo opus-gateway -c /path/to/config.toml
+sudo opus-gateway                        # uses /etc/rusrp/opus-gateway.conf
+sudo opus-gateway -c /path/to/config.conf
 ```
 
-Three config sections: `[mmdvm]` (where it listens for MMDVMHost, and where it sends FMD packets back), `[network]` (the rusrp peer or `usrp-reflector` to send/receive Opus USRP from), and `[audio]` (Opus bitrate/frame size — must match what the far end expects). PCM USRP peers (type-0) are also accepted on the receive path without reconfiguration, for compatibility with nodes not running Opus. See `config/opus_gateway.toml.example` for the full annotated reference.
+Three config sections: `[mmdvm]` (where it listens for MMDVMHost, and where it sends FMD packets back), `[network]` (the rusrp peer or `usrp-reflector` to send/receive Opus USRP from), and `[audio]` (Opus bitrate/frame size — must match what the far end expects). PCM USRP peers (type-0) are also accepted on the receive path without reconfiguration, for compatibility with nodes not running Opus. See `config/opus-gateway.conf.example` for the full annotated reference.
 
 Like `usrp-reflector`, this is a convenience utility for interactive use right now, not a supported headless service — no systemd unit yet. Run it manually in a terminal or your own process supervisor; more packaging polish is planned but not there yet.
 
@@ -233,7 +241,7 @@ Like `usrp-reflector`, this is a convenience utility for interactive use right n
 The `-l` / `--loopback` flag routes USRP packets back to the output path internally without touching the network. This is intended for bench testing the full analog signal chain without an ASL3 server.
 
 ```bash
-sudo ./build/rusrp -c rusrp.toml --loopback
+sudo ./build/rusrp -c rusrp.conf --loopback
 ```
 
 In loopback mode:
@@ -278,7 +286,7 @@ journalctl -u rusrp --since today  # today's entries
 A clean start produces these INFO lines in order:
 
 ```
-rusrp starting, config: /etc/rusrp/rusrp.toml
+rusrp starting, config: /etc/rusrp/rusrp.conf
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
 usrp: listening on :32001 → 198.51.100.10:34001
 alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
@@ -288,7 +296,7 @@ rusrp ready
 In Opus mode an `opus:` line appears after the HID line:
 
 ```
-rusrp starting, config: /etc/rusrp/rusrp.toml (opus)
+rusrp starting, config: /etc/rusrp/rusrp.conf (opus)
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
 opus: 60 ms frames, 8000 bps VBR narrowband SILK
 usrp: listening on :32001 → 198.51.100.10:34001
@@ -299,16 +307,16 @@ rusrp ready
 In loopback mode the `usrp:` line is absent and the startup message notes the mode:
 
 ```
-rusrp starting, config: /etc/rusrp/rusrp.toml (loopback)
+rusrp starting, config: /etc/rusrp/rusrp.conf (loopback)
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
 alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
 rusrp ready
 ```
 
-Both flags may be combined (`--loopback` with `codec = "opus"`):
+Both flags may be combined (`--loopback` with `codec = opus`):
 
 ```
-rusrp starting, config: /etc/rusrp/rusrp.toml (loopback) (opus)
+rusrp starting, config: /etc/rusrp/rusrp.conf (loopback) (opus)
 logic: opened /dev/hidraw0 (gpio3, out_low=1)
 opus: 60 ms frames, 8000 bps VBR narrowband SILK
 alsa: opened plughw:1,0 (8 kHz mono s16le, 20 ms frames)
@@ -373,7 +381,7 @@ What elevated values mean:
 
 `jitter_buffer_ms` does two things: it's the overflow ceiling on the jitter buffer (a burst beyond this depth starts dropping the oldest frame to make room for the newest), and it's how long `watchdog.c` waits after network keyup before asserting PTT (see `ptt_ready_ts` in `watchdog.c`), giving the buffer a moment to have real audio queued before the radio keys up. Raise it if `overflow` shows up in practice; otherwise the default is fine — unlike the old sequence-windowed design, this number is no longer something you need to tune away routine `late` warnings with.
 
-When `level = "debug"`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels, `input_active=` and `output_active=` flags, and all stats from both paths — useful to confirm the daemon is alive between transmissions.
+When `level = debug`, a `heartbeat:` line also fires every `status_interval_sec` seconds. It shows both `in=` and `out=` levels, `input_active=` and `output_active=` flags, and all stats from both paths — useful to confirm the daemon is alive between transmissions.
 
 ### Half-duplex messages
 
@@ -414,8 +422,8 @@ This appears at WARNING level and indicates something went wrong:
 
 | Message | Meaning |
 |---|---|
-| `config: cannot open /path/rusrp.toml` | Config file not found — check the path |
-| `config: parse error in /path: ...` | TOML syntax error; the detail string identifies the line |
+| `config: cannot open /path/rusrp.conf` | Config file not found — check the path |
+| `/path/rusrp.conf:12: ...` | Config error on that line: unknown setting, bad value, duplicate, or quoted value |
 | `config: usrp.remote_host is required` | `remote_host` missing from `[usrp]` section |
 | `config: usrp ports must be 1–65535` | Invalid `remote_port` or `local_port` |
 | `config: gain_db must be in range -12 to +12` | `input_gain_db` or `output_gain_db` out of range |
