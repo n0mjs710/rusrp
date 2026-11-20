@@ -4,7 +4,7 @@ A lightweight audio/control terminal for amateur radio repeater linking. Runs on
 
 One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session.
 
-By default rusrp speaks the standard USRP/PCM protocol, fully compatible with ASL3's `chan_usrp`. An optional **Opus mode** is also available for bandwidth-constrained paths — it uses narrowband Opus at 8 kbps with 60 ms frames, reducing network traffic roughly 11× while remaining transparent over a 300–3000 Hz FM communications channel. Every rusrp receives both PCM and Opus, whatever it sends, so Opus mode needs a compatible peer only for the far end to decode it: another rusrp, usrp-rc, or the included `usrp-reflector`, which can convert for PCM-only nodes such as ASL. Two rusrp instances can also link **point-to-point** without any server — each simply points at the other's IP and port. See [Opus mode](#opus-mode) and [usrp-reflector](#usrp-reflector) below.
+By default rusrp speaks the standard USRP/PCM protocol, fully compatible with ASL3's `chan_usrp`. An optional **Opus mode** is also available for bandwidth-constrained paths — narrowband Opus at 8 kbps in 20, 40 or 60 ms frames, using a fifth to a tenth of PCM's bandwidth while remaining transparent over a 300–3000 Hz FM communications channel. Every rusrp receives both PCM and Opus, whatever it sends, so Opus mode needs a compatible peer only for the far end to decode it: another rusrp, usrp-rc, or the included `usrp-reflector`, which can convert for PCM-only nodes such as ASL. Two rusrp instances can also link **point-to-point** without any server — each simply points at the other's IP and port. See [Opus mode](#opus-mode) and [usrp-reflector](#usrp-reflector) below.
 
 ## Terminology
 
@@ -52,7 +52,7 @@ Analog device                            AllStarLink server
 - **DSP**: 4th-order Butterworth high-pass filter at 250 Hz on both paths, enabled independently (blocks CTCSS/DCS tones); optional 3rd-order Chebyshev Type 1 bandpass filter at 300-2700 Hz (0.2 dB ripple), also independent per path — the exact same coefficients MMDVM-Host's own RX audio chain uses (ported from the sibling `usrp-rc` project's `voice_filter.c`), so an analog repeater linked through rusrp has the same effective bandwidth as one linked through a digital MMDVM path. The bandpass filter already has its own ~300 Hz low-cut built in, so enabling both filters on the same path stacks two low-end cuts for no real benefit — pick one per path, not both
 - **Jitter buffer**: plain arrival-order FIFO (no sequence-number reordering — ASL3's sequencing isn't policed, only trusted for arrival order), overflow-capped at `jitter_buffer_ms` with oldest-frame-dropped on a sustained burst, silence injection on genuine underrun
 - **Watchdog**: sd_notify integration; network timeout forces PTT release; also defers asserting PTT until `jitter_buffer_ms` after network keyup, independent of the jitter buffer's own fill state
-- **Opus mode**: optional narrowband Opus codec (8 kbps VBR, 60 ms frames) for challenged network paths; requires `usrp-reflector` or compatible server
+- **Opus mode**: optional narrowband Opus codec (8 kbps VBR, 20/40/60 ms frames) for challenged network paths; the far end must decode Opus (rusrp, usrp-rc, or `usrp-reflector`, which converts for PCM-only nodes)
 
 ## Requirements
 
@@ -119,7 +119,7 @@ Key settings:
 | `[logic]` | `half_duplex` | `true` to block the second direction until the first releases (first-come-first-served); useful when hardware or wireline configuration cannot cleanly handle simultaneous RX and TX |
 | `[audio]` | `codec` | What rusrp sends: `pcm` (default, standard ASL3) or `opus` (narrowband Opus). Both are always received, with any Opus frame size. |
 | `[audio]` | `opus_bitrate` | Opus VBR target in bps (4000–64000); default 8000. 8 kbps is transparent for 300–3000 Hz communications voice |
-| `[audio]` | `opus_frame_ms` | Opus frame duration: 20, 40, or 60 ms; default 60. 60 ms reduces packet rate 3× vs PCM |
+| `[audio]` | `opus_frame_ms` | Opus frame duration sent: 20, 40 or 60 ms only; default 60. All three are received. See [Choosing a frame size](#choosing-a-frame-size) |
 | `[network]` | `jitter_buffer_ms` | Two things at once: the overflow ceiling on the arrival-order jitter buffer (frames beyond this depth get dropped oldest-first during a sustained burst), and the delay `watchdog.c` waits after network keyup before asserting PTT. 40–250 ms; non-multiples of 20 round up to the next frame; recommend ≥ 120 ms in Opus mode with 60 ms frames |
 | `[watchdog]` | `network_timeout_ms` | Force output_active release after this many ms with no USRP traffic |
 | `[watchdog]` | `unkey_debounce_ms` | Wait N ms before acting on an unkey event; absorbs brief keyup=0 gaps from Asterisk bridging (0 = act immediately) |
@@ -162,21 +162,42 @@ sudo ./build/rusrp -c rusrp.conf
 
 Set `codec = opus` in `[audio]` to send narrowband Opus instead of raw PCM. The far end must decode Opus: rusrp, usrp-rc, or `usrp-reflector` (included), which converts for PCM-only nodes. An Opus transmission is all Opus — 20 ms of encoded silence keys it and a bare header unkeys it — so a PCM-only node such as ASL ignores it rather than keying on part of it.
 
-**Why Opus?** On challenged network paths (high jitter, limited bandwidth), PCM sends 320 bytes every 20 ms (~128 kbps raw). Opus at 8 kbps with 60 ms frames sends ~60 bytes every 60 ms — roughly 16× less traffic — with quality that is transparent over a ±5 kHz FM communications channel (300–3000 Hz passband).
+**Why Opus?** On challenged network paths (high jitter, limited bandwidth), PCM costs 152 kbps on the wire. Opus at 8 kbps costs 15–31 kbps depending on frame size, with quality that is transparent over a ±5 kHz FM communications channel (300–3000 Hz passband).
 
-**Packet format:** Opus packets use USRP type 7 (`USRP_TYPE_OPUS`), a 32-byte standard USRP header followed by the raw Opus frame bytes. Length is determined by the UDP packet size. KEY and UNKEY control frames remain standard PCM type for compatibility.
+#### Choosing a frame size
 
-**Sequence numbers:** Each 60 ms Opus packet advances the sequence counter by 3 (one per 20 ms jitter buffer slot). The decoder splits the decoded 480-sample frame into three 160-sample sub-frames and pushes each to its corresponding jitter buffer slot.
+The only valid values of `opus_frame_ms` are 20, 40 and 60. Each node sets its own, and every rusrp, usrp-rc and opus-gateway receives all three. (Opus itself has other sizes, but sequence numbers count 20 ms frames and receivers decode up to 60 ms.)
 
-**Recommended settings for Opus mode:**
+Measured at `opus_bitrate = 8000`, with the USRP and IP/UDP headers:
+
+| Frame | Bandwidth | Packets/s | Added delay | One lost packet |
+| --- | --- | --- | --- | --- |
+| 20 ms | 31.2 kbps | 50 | none | 20 ms gap |
+| 40 ms | 19.0 kbps | 25 | +20 ms | 40 ms gap |
+| 60 ms | 14.7 kbps | 16.7 | +40 ms | 60 ms gap |
+| PCM | 152 kbps | 50 | none | 20 ms gap |
+
+- **20 ms** suits most links — cable, fiber, cellular with spare capacity. Least delay, shortest gap for a lost packet, and one Opus packet per PCM packet.
+- **60 ms** suits links where packet rate is the limit — RF mesh such as AREDN, satellite. A third of the packets.
+- **40 ms** sits between.
+
+Opus itself is no more efficient with longer frames; SILK always codes 20 ms at a time. A longer frame only sends fewer headers, which is why the savings shrink past 60 ms.
+
+Set `jitter_buffer_ms` to at least two packets: 60 for 20 ms frames, 120 for 60 ms.
+
+**Packet format:** Opus packets use USRP type 7 (`USRP_TYPE_OPUS`), a 32-byte standard USRP header followed by the raw Opus frame bytes. Length is determined by the UDP packet size. An Opus transmission is all type 7: a 20 ms frame of encoded silence keys it, and a bare 32-byte header with `keyup = 0` unkeys it.
+
+**Sequence numbers:** the counter advances by one per 20 ms of audio: 1 for the key frame, then `opus_frame_ms / 20` per packet. The decoder splits each decoded frame into 160-sample (20 ms) sub-frames and pushes them to the jitter buffer in order.
+
+**Example Opus settings:**
 ```ini
 [audio]
 codec           = opus
 opus_bitrate    = 8000    # 8 kbps VBR — transparent for communications voice
-opus_frame_ms   = 60      # 60 ms frames — 3× packet rate reduction vs PCM
+opus_frame_ms   = 20      # 20, 40 or 60; see Choosing a frame size
 
 [network]
-jitter_buffer_ms = 120    # at least 2 Opus packets of headroom
+jitter_buffer_ms = 60     # at least 2 Opus packets of headroom
 ```
 
 ### usrp-reflector
@@ -218,7 +239,7 @@ The reflector is only needed when three or more nodes need to share a conference
 
 ### opus-gateway
 
-`opus-gateway` bridges MMDVMHost's native FM protocol (PCM audio over loopback) to Opus-encoded USRP on the network side. It lets an MMDVMHost FM instance join an Opus-mode rusrp/`usrp-reflector` conference directly, without a rusrp analog leg in between — MMDVMHost talks PCM FM to it on `127.0.0.1`, it talks Opus USRP out to the network.
+`opus-gateway` bridges MMDVMHost's native FM protocol (PCM audio over loopback) to Opus-encoded USRP on the network side. It lets an MMDVMHost FM instance join an Opus-mode rusrp/`usrp-reflector` conference directly, without a rusrp analog leg in between — MMDVMHost talks PCM FM to it on `127.0.0.1`, it talks Opus USRP out to the network. It sends its configured frame size and receives all three (20, 40, 60 ms).
 
 ```
 MMDVMHost (FM protocol, PCM, loopback) ◄──► opus-gateway ◄──► rusrp peer / usrp-reflector (Opus USRP, network)

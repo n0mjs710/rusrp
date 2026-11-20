@@ -31,4 +31,4 @@ local_port    = 34002
 # Opus encoding settings — must match the far-end rusrp or reflector expectations.
 # PCM peers (type-0 USRP) are also accepted on receive without reconfiguration.
 opus_bitrate  = 8000    # VBR target in bps (4000–64000)
-opus_frame_ms = 60      # frame duration: 20, 40, or 60 ms
+opus_frame_ms = 60      # 20, 40 or 60 only; 20 = least delay, 60 = fewest packets
