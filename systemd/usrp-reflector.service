@@ -1,0 +1,19 @@
+[Unit]
+Description=usrp-reflector - USRP conference bridge
+Documentation=https://github.com/n0mjs710/rusrp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/usrp-reflector
+Restart=on-failure
+RestartSec=5
+
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+# usrp-reflector configuration
+#
+# One line per repeater, taken from its ASL rxchannel:
+#   rxchannel = USRP/<repeater_ip>:<txport>:<rxport>
+# becomes
+#   <name> = <rxport> <repeater_ip>:<txport>
+#
+# rxport is where the reflector listens for that repeater (its usrp-rc
+# [link] remote_port); txport is the repeater's own [link] local_port.
+# Repeaters may share a listen port as long as their addresses differ.
+
+[reflector]
+bind_address     = 0.0.0.0
+floor_timeout_ms = 1000     # release the floor after this long with no packets from the talker
+log_level        = info     # info: key/unkey and unknown senders; debug: every dropped packet
+
+[repeaters]
+w1abc = 4811 198.51.100.21:3910
+w1xyz = 4812 198.51.100.22:3910

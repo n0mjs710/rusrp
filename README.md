@@ -181,18 +181,27 @@ jitter_buffer_ms = 120    # at least 2 Opus packets of headroom
 
 ### usrp-reflector
 
-`usrp-reflector` is a simple UDP conference bridge. Multiple rusrp instances connect to it; keyed audio from one client is forwarded to all others. Half-duplex floor: the first client to key up holds the floor until it unkeys.
+`usrp-reflector` is a USRP conference bridge for a fixed set of repeaters: a drop-in for an ASL node whose only job is linking USRP channels. Each repeater gets the same port pair it had in ASL, so nothing changes on the repeaters. Stop ASL, start the reflector.
+
+Each ASL `rxchannel = USRP/<ip>:<txport>:<rxport>` becomes one line in `/etc/rusrp/usrp-reflector.conf`:
+
+```ini
+[repeaters]
+w1abc = 4811 172.17.14.36:3910    # name = rxport ip:txport
+```
+
+The reflector listens on `rxport` for that repeater and sends the others' audio to `ip:txport` *from* `rxport`. That matters: usrp-rc connects its link socket and drops anything not from exactly its `remote_host:remote_port`. Half-duplex floor: the first repeater to key holds it until it unkeys or goes quiet for `floor_timeout_ms`; then the others get an unkey.
+
+rusrp and opus-gateway nodes join the same way: listen port = their `remote_port`, address = their IP and `local_port`.
 
 ```bash
-# Start the reflector on default port 34001
-sudo usrp-reflector
-
-# Custom port and bind address
-sudo usrp-reflector -p 34001 -b 0.0.0.0
-
-# Point rusrp at the reflector
-# In rusrp.conf: remote_host = <reflector IP>, remote_port = 34001
+sudo cp /etc/rusrp/usrp-reflector.conf.example /etc/rusrp/usrp-reflector.conf
+sudo $EDITOR /etc/rusrp/usrp-reflector.conf
+usrp-reflector -v                          # interactive, logs every dropped packet
+sudo systemctl enable --now usrp-reflector
 ```
+
+It logs each key/unkey with duration and packet count, and packets from addresses not in the config. `-v` (or `log_level = debug`) adds every dropped packet and why.
 
 The reflector works for both PCM and Opus because it forwards raw UDP bytes without inspecting the audio payload — it only looks at the USRP header's `keyup` field for floor control. No header format changes were needed for Opus; the packet length from `recv()` implicitly carries the payload size for both types.
 
@@ -203,7 +212,7 @@ Node A: remote_host = <B IP>, remote_port = 34001, local_port = 34001
 Node B: remote_host = <A IP>, remote_port = 34001, local_port = 34001
 ```
 
-The reflector is only needed when three or more nodes need to share a conference. It prints client connect/expire events to stdout and is designed for interactive testing, not headless systemd operation.
+The reflector is only needed when three or more nodes need to share a conference.
 
 ### opus-gateway
 
@@ -234,7 +243,7 @@ sudo opus-gateway -c /path/to/config.conf
 
 Three config sections: `[mmdvm]` (where it listens for MMDVMHost, and where it sends FMD packets back), `[network]` (the rusrp peer or `usrp-reflector` to send/receive Opus USRP from), and `[audio]` (Opus bitrate/frame size — must match what the far end expects). PCM USRP peers (type-0) are also accepted on the receive path without reconfiguration, for compatibility with nodes not running Opus. See `config/opus-gateway.conf.example` for the full annotated reference.
 
-Like `usrp-reflector`, this is a convenience utility for interactive use right now, not a supported headless service — no systemd unit yet. Run it manually in a terminal or your own process supervisor; more packaging polish is planned but not there yet.
+This is a convenience utility for interactive use right now, not a supported headless service — no systemd unit yet. Run it manually in a terminal or your own process supervisor; more packaging polish is planned but not there yet.
 
 ### Digital loopback
 

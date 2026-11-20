@@ -35,7 +35,7 @@ TARGET   = $(BUILDDIR)/rusrp
 
 # ── usrp-reflector ───────────────────────────────────────────────────────────
 
-REFL_SRCS = src/reflector.c src/usrp_protocol.c
+REFL_SRCS = src/reflector.c src/usrp_protocol.c src/conf.c
 REFL_OBJS = $(patsubst %.c,$(BUILDDIR)/%.o,$(REFL_SRCS))
 REFL_DEPS = $(REFL_OBJS:.o=.d)
 REFLECTOR = $(BUILDDIR)/usrp-reflector
@@ -114,7 +114,9 @@ install: $(TARGET) $(REFLECTOR) $(GATEWAY)
 	install -Dm755 $(GATEWAY)                       $(DESTDIR)$(BINDIR)/opus-gateway
 	install -Dm644 config/rusrp.conf.example        $(DESTDIR)$(SYSCONFDIR)/rusrp/rusrp.conf.example
 	install -Dm644 config/opus-gateway.conf.example $(DESTDIR)$(SYSCONFDIR)/rusrp/opus-gateway.conf.example
+	install -Dm644 config/usrp-reflector.conf.example $(DESTDIR)$(SYSCONFDIR)/rusrp/usrp-reflector.conf.example
 	install -Dm644 systemd/rusrp.service     $(DESTDIR)$(UNITDIR)/rusrp.service
+	install -Dm644 systemd/usrp-reflector.service $(DESTDIR)$(UNITDIR)/usrp-reflector.service
 	install -Dm644 udev/90-cm119a.rules      $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
 	@if [ -z "$(DESTDIR)" ]; then \
 		if [ ! -f $(SYSCONFDIR)/rusrp/rusrp.conf ]; then \
@@ -131,5 +133,6 @@ uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/usrp-reflector
 	rm -f $(DESTDIR)$(BINDIR)/opus-gateway
 	rm -f $(DESTDIR)$(UNITDIR)/rusrp.service
+	rm -f $(DESTDIR)$(UNITDIR)/usrp-reflector.service
 	rm -f $(DESTDIR)$(UDEVDIR)/90-cm119a.rules
 	@echo "rusrp: config at $(SYSCONFDIR)/rusrp/ preserved — remove manually if desired"
