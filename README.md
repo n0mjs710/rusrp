@@ -192,6 +192,8 @@ w1abc = 4811 172.17.14.36:3910    # name = rxport ip:txport
 
 The reflector listens on `rxport` for that repeater and sends the others' audio to `ip:txport` *from* `rxport`. That matters: usrp-rc connects its link socket and drops anything not from exactly its `remote_host:remote_port`. Half-duplex floor: the first repeater to key holds it until it unkeys or goes quiet for `floor_timeout_ms`; then the others get an unkey.
 
+**Mixed codecs:** add `opus` after a repeater's address (the default is `pcm`), matching that repeater's own codec setting. Repeaters on the talker's codec get its packets untouched; the others share a single decode or encode, so audio is never converted twice. Opus to PCM adds no delay. PCM to Opus waits for a full frame (`opus_frame_ms` − 20 ms) plus ~6.5 ms of encoder look-ahead, the same as an Opus repeater encoding its own audio. Lost packets are covered: silence for missing PCM frames, Opus concealment for missing Opus packets. All Opus repeaters must use the reflector's `opus_frame_ms`.
+
 rusrp and opus-gateway nodes join the same way: listen port = their `remote_port`, address = their IP and `local_port`.
 
 ```bash

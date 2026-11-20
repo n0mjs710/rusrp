@@ -3,17 +3,25 @@
 # One line per repeater, taken from its ASL rxchannel:
 #   rxchannel = USRP/<repeater_ip>:<txport>:<rxport>
 # becomes
-#   <name> = <rxport> <repeater_ip>:<txport>
+#   <name> = <rxport> <repeater_ip>:<txport> [pcm|opus]
 #
 # rxport is where the reflector listens for that repeater (its usrp-rc
 # [link] remote_port); txport is the repeater's own [link] local_port.
 # Repeaters may share a listen port as long as their addresses differ.
+#
+# The codec (default pcm) must match the repeater's own [link] codec. Audio
+# is converted at most once per transmission: repeaters on the talker's codec
+# get it untouched, the rest share one decode or encode. PCM to Opus adds
+# opus_frame_ms - 20 ms of buffering plus ~6.5 ms of encoder delay, the same
+# as an Opus repeater encoding its own audio.
 
 [reflector]
 bind_address     = 0.0.0.0
 floor_timeout_ms = 1000     # release the floor after this long with no packets from the talker
 log_level        = info     # info: key/unkey and unknown senders; debug: every dropped packet
+opus_bitrate     = 8000     # 4000-64000 bps, for audio the reflector encodes
+opus_frame_ms    = 60       # 20, 40 or 60; must match every opus repeater
 
 [repeaters]
 w1abc = 4811 198.51.100.21:3910
-w1xyz = 4812 198.51.100.22:3910
+w1xyz = 4812 198.51.100.22:3910 opus

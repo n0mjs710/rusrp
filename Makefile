@@ -35,7 +35,7 @@ TARGET   = $(BUILDDIR)/rusrp
 
 # ── usrp-reflector ───────────────────────────────────────────────────────────
 
-REFL_SRCS = src/reflector.c src/usrp_protocol.c src/conf.c
+REFL_SRCS = src/reflector.c src/usrp_protocol.c src/conf.c src/opus_codec.c
 REFL_OBJS = $(patsubst %.c,$(BUILDDIR)/%.o,$(REFL_SRCS))
 REFL_DEPS = $(REFL_OBJS:.o=.d)
 REFLECTOR = $(BUILDDIR)/usrp-reflector
@@ -75,7 +75,7 @@ $(TARGET): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(REFLECTOR): $(REFL_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(GW_LIBS)
 
 $(GATEWAY): $(GW_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(GW_LIBS)

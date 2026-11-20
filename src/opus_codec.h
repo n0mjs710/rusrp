@@ -32,5 +32,12 @@ int opus_codec_encode(opus_codec_t *c, const int16_t *in_pcm, uint8_t *out_opus)
 int opus_codec_decode(opus_codec_t *c, const uint8_t *in_opus, int in_len,
                       int16_t *out_pcm);
 
+/* Fill out_pcm with `samples` of loss concealment (a multiple of 160, up to
+ * frame_samples()). Returns samples written, or negative on error. */
+int opus_codec_conceal(opus_codec_t *c, int16_t *out_pcm, int samples);
+
+/* Clear encoder and decoder history, e.g. between talkers. */
+void opus_codec_reset(opus_codec_t *c);
+
 /* PCM samples per frame: frame_ms * 8 at 8 kHz. */
 int opus_codec_frame_samples(const opus_codec_t *c);

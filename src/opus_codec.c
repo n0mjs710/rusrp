@@ -78,6 +78,20 @@ int opus_codec_decode(opus_codec_t *c, const uint8_t *in_opus, int in_len,
     return n;
 }
 
+int opus_codec_conceal(opus_codec_t *c, int16_t *out_pcm, int samples)
+{
+    int n = opus_decode(c->dec, NULL, 0, out_pcm, samples, 0);
+    if (n < 0)
+        sd_journal_print(LOG_ERR, "opus: conceal: %s", opus_strerror(n));
+    return n;
+}
+
+void opus_codec_reset(opus_codec_t *c)
+{
+    opus_encoder_ctl(c->enc, OPUS_RESET_STATE);
+    opus_decoder_ctl(c->dec, OPUS_RESET_STATE);
+}
+
 int opus_codec_frame_samples(const opus_codec_t *c)
 {
     return c->frame_samples;

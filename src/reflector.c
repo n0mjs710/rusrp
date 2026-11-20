@@ -9,12 +9,17 @@
  *
  * Half-duplex floor: the first repeater to key holds it until it unkeys or
  * goes quiet for floor_timeout_ms; everyone else's traffic is dropped
- * meanwhile. Payloads are forwarded untouched, so PCM and Opus both work.
+ * meanwhile.
+ *
+ * Each repeater takes pcm or opus. Audio goes untouched to repeaters using
+ * the talker's codec; for the others it is converted once (decode or encode)
+ * and the result sent to all of them.
  *
  * Usage: usrp-reflector [-c config] [-v]
  */
 
 #include "conf.h"
+#include "opus_codec.h"
 #include "usrp_protocol.h"
 
 #include <errno.h>
@@ -40,8 +45,12 @@
 #define NAME_LEN       32
 #define UNKNOWN_LOG_MS 30000
 
+typedef enum { CODEC_PCM, CODEC_OPUS } codec_t;
+static const char *const CODECS[] = { "pcm", "opus", NULL };
+
 typedef struct {
     char               name[NAME_LEN];
+    codec_t            codec;
     uint16_t           listen_port;
     struct sockaddr_in addr;
     int                sock;       /* index into socks[] */
@@ -60,6 +69,8 @@ typedef struct {
     char     bind_address[64];
     unsigned floor_timeout_ms;
     int      log_level;            /* 0 info, 1 debug */
+    int      opus_bitrate;
+    int      opus_frame_ms;
 } refl_cfg_t;
 
 static repeater_t rpt[MAX_REPEATERS];
@@ -118,6 +129,8 @@ static const char *addr_str(const struct sockaddr_in *a)
 static const conf_field_t FIELDS[] = {
     F(bind_address,     CONF_STR,  bind_address),
     F(floor_timeout_ms, CONF_UINT, floor_timeout_ms),
+    F(opus_bitrate,     CONF_INT,  opus_bitrate),
+    F(opus_frame_ms,    CONF_INT,  opus_frame_ms),
     { "reflector", "log_level", CONF_CHOICE, offsetof(refl_cfg_t, log_level), 0, LEVELS },
     { 0 }
 };
@@ -133,7 +146,7 @@ static bool resolve(const char *host, const char *port, struct sockaddr_in *out)
     return true;
 }
 
-/* name = listen_port host:port */
+/* name = listen_port host:port [pcm|opus] */
 static void read_repeater(conf_t *c, const conf_entry_t *e)
 {
     if (n_rpt >= MAX_REPEATERS) {
@@ -144,12 +157,21 @@ static void read_repeater(conf_t *c, const conf_entry_t *e)
         conf_err(c, e->line, "%s: name longer than %d characters", e->key, NAME_LEN - 1);
         return;
     }
-    char lport[16], host[256], *colon;
+    char lport[16], host[256], codec[16] = "pcm", extra[2], *colon;
     long long l;
-    if (sscanf(e->value, "%15s %255s", lport, host) != 2
+    int nf = sscanf(e->value, "%15s %255s %15s %1s", lport, host, codec, extra);
+    if (nf < 2 || nf > 3
         || !conf_parse_ll(lport, &l) || l < 1 || l > 65535
         || !(colon = strrchr(host, ':'))) {
-        conf_err(c, e->line, "%s: expected 'listen_port host:port', got '%s'", e->key, e->value);
+        conf_err(c, e->line, "%s: expected 'listen_port host:port [pcm|opus]', got '%s'",
+                 e->key, e->value);
+        return;
+    }
+    int ci = 0;
+    while (CODECS[ci] && strcmp(CODECS[ci], codec) != 0)
+        ci++;
+    if (!CODECS[ci]) {
+        conf_err(c, e->line, "%s: codec '%s' is not pcm or opus", e->key, codec);
         return;
     }
     *colon = '\0';
@@ -172,6 +194,7 @@ static void read_repeater(conf_t *c, const conf_entry_t *e)
     }
     strcpy(r->name, e->key);
     r->listen_port = (uint16_t)l;
+    r->codec = (codec_t)ci;
     n_rpt++;
 }
 
@@ -180,6 +203,8 @@ static int load_config(const char *path)
     memset(&cfg, 0, sizeof(cfg));
     strcpy(cfg.bind_address, "0.0.0.0");
     cfg.floor_timeout_ms = 1000;
+    cfg.opus_bitrate = 8000;
+    cfg.opus_frame_ms = 60;
 
     conf_t c;
     if (conf_read(&c, path) != 0) {
@@ -193,6 +218,10 @@ static int load_config(const char *path)
             read_repeater(&c, &c.v[i]);
     if (!c.errors && n_rpt < 2)
         conf_err(&c, 0, "[repeaters] needs at least two entries");
+    if (cfg.opus_bitrate < 4000 || cfg.opus_bitrate > 64000)
+        conf_err(&c, 0, "opus_bitrate must be 4000-64000");
+    if (cfg.opus_frame_ms != 20 && cfg.opus_frame_ms != 40 && cfg.opus_frame_ms != 60)
+        conf_err(&c, 0, "opus_frame_ms must be 20, 40 or 60");
     int errors = c.errors;
     conf_free(&c);
     return errors ? -1 : 0;
@@ -259,6 +288,161 @@ static void forward(int from, const uint8_t *buf, size_t n)
             send_to(i, buf, n);
 }
 
+static void send_codec(int from, codec_t codec, const uint8_t *buf, size_t n)
+{
+    for (int i = 0; i < n_rpt; i++)
+        if (i != from && rpt[i].codec == codec)
+            send_to(i, buf, n);
+}
+
+static bool has_target(int from, codec_t codec)
+{
+    for (int i = 0; i < n_rpt; i++)
+        if (i != from && rpt[i].codec == codec)
+            return true;
+    return false;
+}
+
+/* ── codec conversion ────────────────────────────────────────────────────── */
+
+/* One stream at a time (half-duplex), so one encoder and one decoder. Sequence
+ * numbers count 20 ms frames, as rusrp and usrp-rc do for Opus. */
+
+#define FRAME       USRP_AUDIO_FRAMES
+#define MAX_GAP     6                    /* frames of loss filled in; more resyncs */
+
+static opus_codec_t *g_opus;
+static int16_t  enc_pcm[480];
+static int      enc_n;                   /* samples accumulated */
+static uint32_t enc_seq;                 /* seq of the first accumulated frame */
+static uint32_t pcm_next;                /* next PCM seq expected */
+static bool     pcm_synced;
+static uint32_t opus_next;               /* next Opus seq expected */
+static bool     opus_synced;
+
+static void codec_reset(void)
+{
+    opus_codec_reset(g_opus);
+    enc_n = 0;
+    pcm_synced = opus_synced = false;
+}
+
+static void enc_send(int from)
+{
+    uint8_t opus[OPUS_MAX_FRAME_BYTES];
+    int len = opus_codec_encode(g_opus, enc_pcm, opus);
+    enc_n = 0;
+    if (len <= 0)
+        return;
+    uint8_t buf[USRP_HEADER_LEN + OPUS_MAX_FRAME_BYTES];
+    size_t n = usrp_build_opus_voice(buf, enc_seq, 1, opus, (size_t)len);
+    send_codec(from, CODEC_OPUS, buf, n);
+}
+
+static void enc_add(int from, const int16_t *frame, uint32_t seq)
+{
+    if (enc_n == 0)
+        enc_seq = seq;
+    if (frame)
+        memcpy(enc_pcm + enc_n, frame, FRAME * sizeof(int16_t));
+    else
+        memset(enc_pcm + enc_n, 0, FRAME * sizeof(int16_t));
+    enc_n += FRAME;
+    if (enc_n >= opus_codec_frame_samples(g_opus))
+        enc_send(from);
+}
+
+/* Pads out and sends a partial frame. */
+static void enc_flush(int from)
+{
+    if (enc_n == 0)
+        return;
+    int fs = opus_codec_frame_samples(g_opus);
+    memset(enc_pcm + enc_n, 0, (size_t)(fs - enc_n) * sizeof(int16_t));
+    enc_send(from);
+}
+
+/* PCM in, Opus out. Lost frames are filled with silence so timing holds. */
+static void enc_push(int from, const int16_t *frame, uint32_t seq)
+{
+    if (pcm_synced) {
+        int32_t gap = (int32_t)(seq - pcm_next);
+        if (gap < 0) {
+            DEBUG("%s: late PCM frame %u, not encoded", rpt[from].name, seq);
+            return;
+        }
+        if (gap > MAX_GAP) {
+            enc_flush(from);
+        } else {
+            for (int32_t k = 0; k < gap; k++)
+                enc_add(from, NULL, pcm_next + (uint32_t)k);
+        }
+    }
+    enc_add(from, frame, seq);
+    pcm_next = seq + 1;
+    pcm_synced = true;
+}
+
+static void send_pcm_frames(int from, const int16_t *pcm, int samples, uint32_t seq)
+{
+    uint8_t buf[USRP_PKT_LEN];
+    for (int k = 0; k < samples / (int)FRAME; k++) {
+        usrp_build_voice(buf, seq + (uint32_t)k, 1, pcm + k * FRAME);
+        send_codec(from, CODEC_PCM, buf, sizeof(buf));
+    }
+}
+
+/* Opus in, PCM out. A lost packet is covered by Opus loss concealment. */
+static void dec_push(int from, const usrp_packet_t *p)
+{
+    int16_t pcm[480];
+    if (opus_synced) {
+        int32_t gap = (int32_t)(p->seq - opus_next);
+        if (gap < 0) {
+            DEBUG("%s: late Opus packet %u, not decoded", rpt[from].name, p->seq);
+            return;
+        }
+        int fs = opus_codec_frame_samples(g_opus);
+        for (int32_t done = 0; gap > 0 && gap <= MAX_GAP && done < gap; ) {
+            int want = (int)(gap - done) * (int)FRAME;
+            if (want > fs)
+                want = fs;
+            int n = opus_codec_conceal(g_opus, pcm, want);
+            if (n <= 0)
+                break;
+            send_pcm_frames(from, pcm, n, opus_next + (uint32_t)done);
+            done += n / (int)FRAME;
+        }
+    }
+    int n = opus_codec_decode(g_opus, p->opus, (int)p->opus_len, pcm);
+    if (n <= 0) {
+        DEBUG("%s: Opus packet %u did not decode", rpt[from].name, p->seq);
+        return;
+    }
+    send_pcm_frames(from, pcm, n, p->seq);
+    opus_next = p->seq + (uint32_t)(n / (int)FRAME);
+    opus_synced = true;
+}
+
+/* Sends the holder's packet on: as is to its own codec, converted to the other.
+ * An Opus talker keys with a PCM silence frame; that goes to everyone as is. */
+static void relay(int from, const usrp_packet_t *p, const uint8_t *buf, size_t n)
+{
+    if (!p->keyup) {
+        enc_flush(from);
+        forward(from, buf, n);
+    } else if (p->type == USRP_TYPE_OPUS && has_target(from, CODEC_PCM)) {
+        send_codec(from, CODEC_OPUS, buf, n);
+        dec_push(from, p);
+    } else if (p->type == USRP_TYPE_VOICE && n >= USRP_PKT_LEN
+               && rpt[from].codec == CODEC_PCM && has_target(from, CODEC_OPUS)) {
+        send_codec(from, CODEC_PCM, buf, n);
+        enc_push(from, p->audio, p->seq);
+    } else {
+        forward(from, buf, n);
+    }
+}
+
 /* ── floor ───────────────────────────────────────────────────────────────── */
 
 static int      holder = -1;
@@ -305,6 +489,7 @@ static void handle_packet(int s, const uint8_t *buf, size_t n, const struct sock
         holder = i;
         floor_start_ms = now;
         floor_pkts = 0;
+        codec_reset();
         logmsg("KEY %s", r->name);
     }
     if (holder != i) {
@@ -318,7 +503,7 @@ static void handle_packet(int s, const uint8_t *buf, size_t n, const struct sock
 
     floor_pkts++;
     holder_seq = pkt.seq;
-    forward(i, buf, n);
+    relay(i, &pkt, buf, n);
     if (!keyed)
         floor_release("unkey");
 }
@@ -327,6 +512,7 @@ static void check_floor_timeout(void)
 {
     if (holder < 0 || now_ms() - rpt[holder].last_rx_ms < cfg.floor_timeout_ms)
         return;
+    enc_flush(holder);
     uint8_t buf[USRP_PKT_LEN];
     usrp_build_key(buf, holder_seq + 1, 0);
     forward(holder, buf, sizeof(buf));
@@ -363,15 +549,20 @@ int main(int argc, char *argv[])
         cfg.log_level = 1;
     if (open_sockets() != 0)
         return 1;
+    if (opus_codec_create(&g_opus, cfg.opus_bitrate, cfg.opus_frame_ms) != 0) {
+        fprintf(stderr, "usrp-reflector: cannot create Opus codec\n");
+        return 1;
+    }
 
     struct sigaction sa = { .sa_handler = on_signal };
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
 
-    logmsg("usrp-reflector: %d repeaters, floor timeout %u ms", n_rpt, cfg.floor_timeout_ms);
+    logmsg("usrp-reflector: %d repeaters, floor timeout %u ms, opus %d ms %d bps",
+           n_rpt, cfg.floor_timeout_ms, cfg.opus_frame_ms, cfg.opus_bitrate);
     for (int i = 0; i < n_rpt; i++)
-        logmsg("  %-12s listen %s:%u -> %s", rpt[i].name, cfg.bind_address,
-               rpt[i].listen_port, addr_str(&rpt[i].addr));
+        logmsg("  %-12s listen %s:%u -> %-21s %s", rpt[i].name, cfg.bind_address,
+               rpt[i].listen_port, addr_str(&rpt[i].addr), CODECS[rpt[i].codec]);
 
     struct pollfd pfd[MAX_REPEATERS];
     for (int s = 0; s < n_socks; s++)
@@ -403,6 +594,7 @@ int main(int argc, char *argv[])
         check_floor_timeout();
     }
 
+    opus_codec_destroy(g_opus);
     logmsg("usrp-reflector: stopped");
     return 0;
 }
