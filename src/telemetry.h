@@ -16,7 +16,8 @@ int  telemetry_create(telemetry_t **tel, const config_t *cfg);
 void telemetry_input_start(telemetry_t *tel);
 
 /* Call on the falling edge of input_active (capture thread). */
-void telemetry_input_end(telemetry_t *tel, audio_alsa_t *alsa, audio_proc_t *in_proc);
+void telemetry_input_end(telemetry_t *tel, audio_alsa_t *alsa, audio_proc_t *in_proc,
+                         bool opus);
 
 /* Call on the rising edge of output_active (playback thread). */
 void telemetry_output_start(telemetry_t *tel);
@@ -24,7 +25,7 @@ void telemetry_output_start(telemetry_t *tel);
 /* Call on the falling edge of output_active (playback thread).
  * jitter_buffer_latch_silence() must be called before this. */
 void telemetry_output_end(telemetry_t *tel, audio_alsa_t *alsa,
-                          audio_proc_t *out_proc, jitter_buffer_t *jb);
+                          audio_proc_t *out_proc, jitter_buffer_t *jb, bool opus);
 
 /* Periodic heartbeat — call from the main loop. */
 void telemetry_log(telemetry_t *tel,

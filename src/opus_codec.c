@@ -69,10 +69,19 @@ int opus_codec_encode(opus_codec_t *c, const int16_t *in_pcm, uint8_t *out_opus)
     return n;
 }
 
+int opus_codec_encode_key(opus_codec_t *c, uint8_t *out_opus)
+{
+    static const int16_t silence[160];
+    int n = opus_encode(c->enc, silence, 160, out_opus, (opus_int32)OPUS_MAX_FRAME_BYTES);
+    if (n < 0)
+        sd_journal_print(LOG_ERR, "opus: encode: %s", opus_strerror(n));
+    return n;
+}
+
 int opus_codec_decode(opus_codec_t *c, const uint8_t *in_opus, int in_len,
                       int16_t *out_pcm)
 {
-    int n = opus_decode(c->dec, in_opus, in_len, out_pcm, c->frame_samples, 0);
+    int n = opus_decode(c->dec, in_opus, in_len, out_pcm, OPUS_MAX_DECODE_SAMPLES, 0);
     if (n < 0)
         sd_journal_print(LOG_ERR, "opus: decode: %s", opus_strerror(n));
     return n;

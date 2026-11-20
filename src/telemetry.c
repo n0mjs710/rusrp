@@ -33,6 +33,7 @@ int telemetry_create(telemetry_t **tel, const config_t *cfg)
 #define STAT_OUT_CLIPS       (1u << 7)  /* clips= (output path) */
 
 static void log_status(int priority, const char *label,
+                       const char *codec,
                        unsigned int flags,
                        uint64_t dur_ms,
                        float in_peak,  float in_rms,
@@ -45,6 +46,8 @@ static void log_status(int priority, const char *label,
 {
     char buf[384];
     int n = snprintf(buf, sizeof(buf), "%s:", label);
+    if (codec)
+        n += snprintf(buf + n, sizeof(buf) - n, " codec=%s", codec);
     if (flags & STAT_DURATION)
         n += snprintf(buf + n, sizeof(buf) - n,
                       " dur=%.1fs", (double)dur_ms / 1000.0);
@@ -82,7 +85,8 @@ void telemetry_input_start(telemetry_t *tel)
     tel->input_tx_start_ts = monotonic_ms();
 }
 
-void telemetry_input_end(telemetry_t *tel, audio_alsa_t *alsa, audio_proc_t *in_proc)
+void telemetry_input_end(telemetry_t *tel, audio_alsa_t *alsa, audio_proc_t *in_proc,
+                         bool opus)
 {
     uint64_t now    = monotonic_ms();
     uint64_t dur_ms = tel->input_tx_start_ts ? (now - tel->input_tx_start_ts) : 0;
@@ -91,7 +95,7 @@ void telemetry_input_end(telemetry_t *tel, audio_alsa_t *alsa, audio_proc_t *in_
     uint64_t overruns = 0, underruns = 0;
     if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
     uint64_t in_clips = in_proc ? audio_proc_clip_count(in_proc) : 0;
-    log_status(LOG_INFO, "input-end",
+    log_status(LOG_INFO, "input-end", opus ? "opus" : "pcm",
                STAT_DURATION | STAT_INPUT_LEVELS | STAT_INPUT_PATH | STAT_IN_CLIPS,
                dur_ms,
                in_peak, in_rms, 0.0f, 0.0f,
@@ -105,7 +109,7 @@ void telemetry_output_start(telemetry_t *tel)
 }
 
 void telemetry_output_end(telemetry_t *tel, audio_alsa_t *alsa,
-                          audio_proc_t *out_proc, jitter_buffer_t *jb)
+                          audio_proc_t *out_proc, jitter_buffer_t *jb, bool opus)
 {
     uint64_t now    = monotonic_ms();
     uint64_t dur_ms = tel->output_tx_start_ts ? (now - tel->output_tx_start_ts) : 0;
@@ -117,7 +121,7 @@ void telemetry_output_end(telemetry_t *tel, audio_alsa_t *alsa,
     float    jitter     = jb       ? jitter_buffer_estimate_ms(jb)             : 0.0f;
     uint64_t overflow   = jb       ? jitter_buffer_overflow_count(jb)          : 0;
     uint64_t tx_silence = jb       ? jitter_buffer_latched_silence_count(jb)   : 0;
-    log_status(LOG_INFO, "output-end",
+    log_status(LOG_INFO, "output-end", opus ? "opus" : "pcm",
                STAT_DURATION | STAT_OUTPUT_LEVELS | STAT_OUTPUT_PATH | STAT_OUT_CLIPS,
                dur_ms,
                0.0f, 0.0f, out_peak, out_rms,
@@ -154,7 +158,7 @@ void telemetry_log(telemetry_t *tel,
     uint64_t overruns = 0, underruns = 0;
     if (alsa) audio_alsa_get_stats(alsa, &overruns, &underruns);
 
-    log_status(LOG_DEBUG, "heartbeat",
+    log_status(LOG_DEBUG, "heartbeat", NULL,
                STAT_INPUT_LEVELS | STAT_OUTPUT_LEVELS | STAT_ACTIVE_FLAGS |
                STAT_INPUT_PATH   | STAT_OUTPUT_PATH,
                0,

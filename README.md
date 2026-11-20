@@ -4,7 +4,7 @@ A lightweight audio/control terminal for amateur radio repeater linking. Runs on
 
 One instance of `rusrp` handles one radio link: a single full-duplex CM119A USB audio/HID device, one ALSA audio stream, and one USRP session.
 
-By default rusrp speaks the standard USRP/PCM protocol, fully compatible with ASL3's `chan_usrp`. An optional **Opus mode** is also available for bandwidth-constrained paths — it uses narrowband Opus at 8 kbps with 60 ms frames, reducing network traffic roughly 11× while remaining transparent over a 300–3000 Hz FM communications channel. Opus mode requires a compatible peer: either another rusrp instance, or the included `usrp-reflector`. Two rusrp instances can also link **point-to-point** without any server — each simply points at the other's IP and port. See [Opus mode](#opus-mode) and [usrp-reflector](#usrp-reflector) below.
+By default rusrp speaks the standard USRP/PCM protocol, fully compatible with ASL3's `chan_usrp`. An optional **Opus mode** is also available for bandwidth-constrained paths — it uses narrowband Opus at 8 kbps with 60 ms frames, reducing network traffic roughly 11× while remaining transparent over a 300–3000 Hz FM communications channel. Every rusrp receives both PCM and Opus, whatever it sends, so Opus mode needs a compatible peer only for the far end to decode it: another rusrp, usrp-rc, or the included `usrp-reflector`, which can convert for PCM-only nodes such as ASL. Two rusrp instances can also link **point-to-point** without any server — each simply points at the other's IP and port. See [Opus mode](#opus-mode) and [usrp-reflector](#usrp-reflector) below.
 
 ## Terminology
 
@@ -117,7 +117,7 @@ Key settings:
 | `[logic]` | `input_active_low` | `true` if the input signal is active when the line is pulled low (most hardware) |
 | `[logic]` | `output_active_low` | `true` if the output signal is active-low (open-collector driver — most hardware) |
 | `[logic]` | `half_duplex` | `true` to block the second direction until the first releases (first-come-first-served); useful when hardware or wireline configuration cannot cleanly handle simultaneous RX and TX |
-| `[audio]` | `codec` | `pcm` (default, standard ASL3) or `opus` (narrowband Opus, requires compatible server) |
+| `[audio]` | `codec` | What rusrp sends: `pcm` (default, standard ASL3) or `opus` (narrowband Opus). Both are always received, with any Opus frame size. |
 | `[audio]` | `opus_bitrate` | Opus VBR target in bps (4000–64000); default 8000. 8 kbps is transparent for 300–3000 Hz communications voice |
 | `[audio]` | `opus_frame_ms` | Opus frame duration: 20, 40, or 60 ms; default 60. 60 ms reduces packet rate 3× vs PCM |
 | `[network]` | `jitter_buffer_ms` | Two things at once: the overflow ceiling on the arrival-order jitter buffer (frames beyond this depth get dropped oldest-first during a sustained burst), and the delay `watchdog.c` waits after network keyup before asserting PTT. 40–250 ms; non-multiples of 20 round up to the next frame; recommend ≥ 120 ms in Opus mode with 60 ms frames |
@@ -160,7 +160,7 @@ sudo ./build/rusrp -c rusrp.conf
 
 ### Opus mode
 
-Set `codec = opus` in `[audio]` to use narrowband Opus instead of raw PCM. This requires a compatible server on the far end — either `usrp-reflector` (included) or a future Opus-aware ASL server.
+Set `codec = opus` in `[audio]` to send narrowband Opus instead of raw PCM. The far end must decode Opus: rusrp, usrp-rc, or `usrp-reflector` (included), which converts for PCM-only nodes. An Opus transmission is all Opus — 20 ms of encoded silence keys it and a bare header unkeys it — so a PCM-only node such as ASL ignores it rather than keying on part of it.
 
 **Why Opus?** On challenged network paths (high jitter, limited bandwidth), PCM sends 320 bytes every 20 ms (~128 kbps raw). Opus at 8 kbps with 60 ms frames sends ~60 bytes every 60 ms — roughly 16× less traffic — with quality that is transparent over a ±5 kHz FM communications channel (300–3000 Hz passband).
 
@@ -346,14 +346,15 @@ A status line is written at the end of every transmission, summarising that tran
 Each event type shows only the fields relevant to that path:
 
 ```
-input-end:  dur=3.0s in=-12.3pk/-18.0rms dBFS overruns=0 clips=0
-output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms overflow=0 silence=0 underruns=0 clips=0
+input-end:  codec=pcm dur=3.0s in=-12.3pk/-18.0rms dBFS overruns=0 clips=0
+output-end: codec=opus dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms overflow=0 silence=0 underruns=0 clips=0
 ```
 
 **`input-end` fields:**
 
 | Field | Meaning |
 |---|---|
+| `codec=` | What was sent: `pcm` or `opus` |
 | `dur=X.Xs` | Transmission duration in seconds |
 | `in=Xpk/Yrms dBFS` | Peak and RMS level of captured audio, accumulated over the transmission |
 | `overruns=N` | ALSA capture buffer overruns — ALSA filled its ring buffer before rusrp could read it; audio frames were lost |
@@ -363,6 +364,7 @@ output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms overflow=0 silence=
 
 | Field | Meaning |
 |---|---|
+| `codec=` | What was received in this transmission: `opus` if any Opus audio arrived, otherwise `pcm` |
 | `dur=X.Xs` | Transmission duration in seconds |
 | `out=Xpk/Yrms dBFS` | Peak and RMS level of audio sent to the output device, accumulated over the transmission |
 | `jitter=X ms` | Estimated network jitter at log time |
@@ -376,7 +378,7 @@ output-end: dur=2.0s out=-14.1pk/-20.3rms dBFS jitter=42.0ms overflow=0 silence=
 A healthy output-end line looks like this:
 
 ```
-output-end: dur=3.0s out=-14.1pk/-20.3rms dBFS jitter=8.0ms overflow=0 silence=0 underruns=0 clips=0
+output-end: codec=pcm dur=3.0s out=-14.1pk/-20.3rms dBFS jitter=8.0ms overflow=0 silence=0 underruns=0 clips=0
 ```
 
 What elevated values mean:

@@ -280,8 +280,10 @@ int main(int argc, char *argv[])
 
                 if (type == 'D' && n > 3) {
                     if (!tx_active) {
-                        usrp_build_key(net_pkt, tx_seq++, 1);
-                        sendto(net_sock, net_pkt, USRP_PKT_LEN, 0,
+                        int klen = opus_codec_encode_key(codec, opus_buf);
+                        size_t plen = usrp_build_opus_voice(net_pkt, tx_seq++, 1, opus_buf,
+                                                            klen > 0 ? (size_t)klen : 0);
+                        sendto(net_sock, net_pkt, plen, 0,
                                (const struct sockaddr *)&net_peer, sizeof(net_peer));
                         tx_active  = true;
                         tx_accum_n = 0;
@@ -330,8 +332,8 @@ int main(int argc, char *argv[])
                             tx_seq    += (uint32_t)sub_frames;
                             tx_accum_n = 0;
                         }
-                        usrp_build_key(net_pkt, tx_seq++, 0);
-                        sendto(net_sock, net_pkt, USRP_PKT_LEN, 0,
+                        size_t ulen = usrp_build_opus_voice(net_pkt, tx_seq++, 0, opus_buf, 0);
+                        sendto(net_sock, net_pkt, ulen, 0,
                                (const struct sockaddr *)&net_peer, sizeof(net_peer));
                         tx_active = false;
                         tx_seq    = 0;
@@ -366,9 +368,8 @@ int main(int argc, char *argv[])
 
     /* If mid-transmission at shutdown, send UNKEY to the network peer */
     if (tx_active) {
-        usrp_build_key(net_pkt, tx_seq, 0);
-        sendto(net_sock, net_pkt, USRP_PKT_LEN, 0,
-               (const struct sockaddr *)&net_peer, sizeof(net_peer));
+        size_t ulen = usrp_build_opus_voice(net_pkt, tx_seq, 0, opus_buf, 0);
+        sendto(net_sock, net_pkt, ulen, 0, (const struct sockaddr *)&net_peer, sizeof(net_peer));
     }
 
     close(mmdvm_sock);

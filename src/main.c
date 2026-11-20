@@ -88,6 +88,23 @@ static void flush_opus_frame(tx_ctx_t *ctx)
     ctx->opus_accum_n = 0;
 }
 
+/* An Opus stream stays all Opus: it keys with 20 ms of encoded silence and unkeys
+ * with a bare header, so a PCM-only peer such as ASL never sees part of it. */
+static void send_key(tx_ctx_t *ctx, uint32_t seq, bool keyup)
+{
+    uint8_t pkt[USRP_PKT_LEN];
+    if (ctx->opus_enc == NULL) {
+        usrp_build_key(pkt, seq, keyup ? 1 : 0);
+        ctx->send(ctx, pkt, USRP_PKT_LEN);
+        return;
+    }
+    uint8_t opus_buf[OPUS_MAX_FRAME_BYTES];
+    int len = keyup ? opus_codec_encode_key(ctx->opus_enc, opus_buf) : 0;
+    if (len < 0)
+        len = 0;
+    ctx->send(ctx, pkt, usrp_build_opus_voice(pkt, seq, keyup ? 1 : 0, opus_buf, (size_t)len));
+}
+
 /* Called from the ALSA capture thread for each 160-sample frame. */
 static void on_capture_frame(const int16_t *samples, size_t count, void *userdata)
 {
@@ -129,8 +146,7 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
             audio_trim_tx_start(ctx->in_trim);
             seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                        memory_order_relaxed);
-            usrp_build_key(pkt, seq, 1);
-            ctx->send(ctx, pkt, USRP_PKT_LEN);
+            send_key(ctx, seq, true);
         }
     }
 
@@ -151,9 +167,8 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
 
         seq = (uint32_t)atomic_fetch_add_explicit(&ctx->tx_seq, 1,
                                                    memory_order_relaxed);
-        usrp_build_key(pkt, seq, 0);
-        ctx->send(ctx, pkt, USRP_PKT_LEN);
-        telemetry_input_end(ctx->tel, ctx->alsa, ctx->in_proc);
+        send_key(ctx, seq, false);
+        telemetry_input_end(ctx->tel, ctx->alsa, ctx->in_proc, ctx->opus_enc != NULL);
         if (ctx->cfg->logic.half_duplex) {
             atomic_store_explicit(ctx->floor, FLOOR_IDLE, memory_order_release);
             ctx->floor_held = false;
@@ -189,7 +204,9 @@ static void on_capture_frame(const int16_t *samples, size_t count, void *userdat
 typedef struct {
     watchdog_t      *wd;
     jitter_buffer_t *jb;
-    opus_codec_t    *opus_dec;  /* NULL in PCM mode */
+    opus_codec_t    *opus_dec;  /* always set: either codec is accepted */
+    bool             keyed;
+    atomic_bool     *rx_opus;   /* this transmission carried Opus; read at output-end */
 } rx_ctx_t;
 
 static void on_usrp_packet(const usrp_packet_t *pkt, void *userdata)
@@ -199,13 +216,20 @@ static void on_usrp_packet(const usrp_packet_t *pkt, void *userdata)
     watchdog_packet_received(ctx->wd);
     watchdog_key_event(ctx->wd, pkt->keyup != 0);
 
-    if (!pkt->keyup)
+    if (!pkt->keyup) {
+        ctx->keyed = false;
         return;
+    }
+    if (!ctx->keyed) {
+        ctx->keyed = true;
+        atomic_store_explicit(ctx->rx_opus, false, memory_order_relaxed);
+    }
 
     if (pkt->type == USRP_TYPE_VOICE) {
         jitter_buffer_push(ctx->jb, pkt->audio);
-    } else if (pkt->type == USRP_TYPE_OPUS && ctx->opus_dec != NULL) {
-        int16_t pcm[480];
+    } else if (pkt->type == USRP_TYPE_OPUS && pkt->opus_len > 0) {
+        atomic_store_explicit(ctx->rx_opus, true, memory_order_relaxed);
+        int16_t pcm[OPUS_MAX_DECODE_SAMPLES];
         int n = opus_codec_decode(ctx->opus_dec,
                                   pkt->opus, (int)pkt->opus_len, pcm);
         if (n > 0) {
@@ -226,6 +250,7 @@ typedef struct {
     jitter_buffer_t      *jb;
     const logic_hid_t    *logic;
     telemetry_t          *tel;
+    atomic_bool          *rx_opus;
     atomic_bool          *stop;
 } pb_ctx_t;
 
@@ -252,7 +277,8 @@ static void *playback_thread_fn(void *arg)
         } else if (!output_active && prev_output_active) {
             audio_trim_tx_end(ctx->out_trim);
             jitter_buffer_latch_silence(ctx->jb);
-            telemetry_output_end(ctx->tel, ctx->alsa, ctx->out_proc, ctx->jb);
+            telemetry_output_end(ctx->tel, ctx->alsa, ctx->out_proc, ctx->jb,
+                                 atomic_load_explicit(ctx->rx_opus, memory_order_relaxed));
         }
         prev_output_active = output_active;
 
@@ -338,16 +364,13 @@ int main(int argc, char *argv[])
     if (jitter_buffer_create(&jb, cfg.network.jitter_buffer_ms) != 0) goto fail;
     if (watchdog_create(&wd, &cfg, logic, jb, &g_floor) != 0)         goto fail;
 
-    /* ── init: Opus codec (skipped in PCM mode) ── */
-    if (cfg.audio.codec == AUDIO_CODEC_OPUS) {
-        if (opus_codec_create(&opus,
-                              cfg.audio.opus_bitrate,
-                              cfg.audio.opus_frame_ms) != 0)
-            goto fail;
-    }
+    /* ── init: Opus codec (decoder always; encoder used only in Opus mode) ── */
+    if (opus_codec_create(&opus, cfg.audio.opus_bitrate, cfg.audio.opus_frame_ms) != 0)
+        goto fail;
 
     /* ── init: USRP transport (skipped in loopback mode) ── */
-    rx_ctx_t rx_ctx = { .wd = wd, .jb = jb, .opus_dec = opus };
+    static atomic_bool rx_opus;
+    rx_ctx_t rx_ctx = { .wd = wd, .jb = jb, .opus_dec = opus, .rx_opus = &rx_opus };
     if (!loopback) {
         if (usrp_transport_create(&transport, &cfg, on_usrp_packet, &rx_ctx) != 0)
             goto fail;
@@ -386,7 +409,7 @@ int main(int argc, char *argv[])
     tx_ctx.send              = loopback ? send_loopback : send_network;
     tx_ctx.loopback_cb       = on_usrp_packet;
     tx_ctx.loopback_userdata = &rx_ctx;
-    tx_ctx.opus_enc          = opus;
+    tx_ctx.opus_enc          = cfg.audio.codec == AUDIO_CODEC_OPUS ? opus : NULL;
     tx_ctx.opus_accum_n      = 0;
 
     if (audio_alsa_create(&alsa, &cfg, on_capture_frame, &tx_ctx) != 0)
@@ -402,6 +425,7 @@ int main(int argc, char *argv[])
     pb_ctx.jb       = jb;
     pb_ctx.logic    = logic;
     pb_ctx.tel      = tel;
+    pb_ctx.rx_opus  = &rx_opus;
     pb_ctx.stop     = &g_stop;
 
     if (pthread_create(&pb_thread, NULL, playback_thread_fn, &pb_ctx) != 0) {

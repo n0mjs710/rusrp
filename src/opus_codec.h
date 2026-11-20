@@ -5,6 +5,9 @@
 /* Generous upper bound for any supported bitrate/frame combination. */
 #define OPUS_MAX_FRAME_BYTES 256u
 
+/* Largest frame decoded: 60 ms at 8 kHz, whatever this side sends. */
+#define OPUS_MAX_DECODE_SAMPLES 480
+
 typedef struct opus_codec opus_codec_t;
 
 /*
@@ -24,9 +27,13 @@ void opus_codec_destroy(opus_codec_t *c);
  */
 int opus_codec_encode(opus_codec_t *c, const int16_t *in_pcm, uint8_t *out_opus);
 
+/* Encode 20 ms of silence, the frame that keys an Opus stream.
+ * out_opus must be at least OPUS_MAX_FRAME_BYTES. */
+int opus_codec_encode_key(opus_codec_t *c, uint8_t *out_opus);
+
 /*
- * Decode one Opus frame.
- * out_pcm must hold at least frame_samples() samples.
+ * Decode one Opus packet of any frame size up to 60 ms.
+ * out_pcm must hold OPUS_MAX_DECODE_SAMPLES samples.
  * Returns samples decoded, or negative on error.
  */
 int opus_codec_decode(opus_codec_t *c, const uint8_t *in_opus, int in_len,
